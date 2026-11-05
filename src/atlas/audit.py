@@ -69,13 +69,13 @@ def tail(root, limit: int = 20) -> list[dict]:
 def render(root, limit: int = 20) -> str:
     entries = tail(root, limit)
     if not entries:
-        return "_Keine Schreibzugriffe protokolliert._"
+        return "_No write operations logged._"
 
     rows = []
     for entry in entries:
         stamp = str(entry.get("ts", ""))[:16].replace("T", " ")
         tool = str(entry.get("tool", "?"))
-        verdict = "ok" if entry.get("verified") else "NICHT VERIFIZIERT"
+        verdict = "ok" if entry.get("verified") else "NOT VERIFIED"
         target = (
             entry.get("sheet")
             # `publish` schreibt `document`, nicht `document_name` — sonst

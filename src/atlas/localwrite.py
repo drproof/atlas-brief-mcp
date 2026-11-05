@@ -89,7 +89,7 @@ def set_status(root: Path, conn, wo: int, status: str,
 
     mark = STATUS_MARK.get(status.lower())
     if mark is None:
-        raise ValueError(f"Unbekannter Status '{status}' (erlaubt: done, open)")
+        raise ValueError(f"Unknown status '{status}' (allowed: done, open)")
 
     found = find_line(root, wo)
     if found is None:
@@ -97,8 +97,8 @@ def set_status(root: Path, conn, wo: int, status: str,
             "written": False,
             "changed": False,
             "verified": False,
-            "reason": f"Work Order {wo} steht in keiner lokalen Doku-Datei. "
-                      "Erst `atlas publish` oder die Zeile manuell anlegen.",
+            "reason": f"Work Order {wo} is not in any local documentation file. "
+                      "Run `atlas publish` first or add the line manually.",
             "source": "local",
         }
 
@@ -138,7 +138,7 @@ def set_status(root: Path, conn, wo: int, status: str,
     verified = bool(confirmed and mark in confirmed[2].group(0))
     payload["verified"] = verified
     if not verified:
-        payload["warning"] = "Zeile wurde geschrieben, steht aber nicht so in der Datei."
+        payload["warning"] = "Line was written, but could not be read back from the file."
 
     indexer.index_file(conn, root, path)
     conn.commit()
@@ -157,7 +157,7 @@ def publish(root: Path, conn, wo: int, line: str, section: str,
         return {
             "written": False,
             "unchanged": True,
-            "reason": f"Work Order {wo} existiert bereits — Status ändern statt neu anlegen.",
+            "reason": f"Work Order {wo} already exists — change its status instead of creating a duplicate.",
             "source": "local",
         }
 
@@ -168,7 +168,7 @@ def publish(root: Path, conn, wo: int, line: str, section: str,
         candidates = targets(root)[:1]
     if not candidates:
         return {"written": False, "verified": False, "source": "local",
-                "reason": "Keine lokale Doku-Datei gefunden — `atlas init` ausführen."}
+                "reason": "No local documentation file found — run `atlas init` first."}
 
     path = candidates[0]
     text = path.read_text(encoding="utf-8")
@@ -192,7 +192,7 @@ def publish(root: Path, conn, wo: int, line: str, section: str,
     verified = bool(confirmed and line.strip() in confirmed[2].group(0))
     payload["verified"] = verified
     if not verified:
-        payload["warning"] = "Zeile wurde geschrieben, steht aber nicht so in der Datei."
+        payload["warning"] = "Line was written, but could not be read back from the file."
 
     indexer.index_file(conn, root, path)
     conn.commit()

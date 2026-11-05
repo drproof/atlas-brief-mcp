@@ -14,7 +14,7 @@ def test_format_rejects_unknown_status():
     try:
         format_line(1, "vielleicht", "X")
     except ValueError as error:
-        assert "Status" in str(error)
+        assert "status" in str(error).lower()
     else:
         raise AssertionError("ValueError erwartet")
 

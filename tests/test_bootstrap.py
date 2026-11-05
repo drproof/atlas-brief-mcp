@@ -222,7 +222,7 @@ def test_core_symbols_are_the_big_ones_not_the_first(tmp_path):
     )
 
     scan = bootstrap.scan_repository(root)
-    symbols = scan["domains"]["(Wurzel)"]["symbols"]
+    symbols = scan["domains"]["(root)"]["symbols"]
 
     assert symbols[0] == "resolve_combat_round"
     assert "_ready" not in symbols
@@ -248,10 +248,10 @@ def test_class_methods_have_correct_length(tmp_path):
     )
 
     scan = bootstrap.scan_repository(root)
-    texts = {f["path"]: f for f in scan["domains"]["(Wurzel)"]["files"]}
+    texts = {f["path"]: f for f in scan["domains"]["(root)"]["files"]}
 
     # Nur die lange Methode ist ein Kern-Symbol, nicht die zwei kurzen.
-    assert scan["domains"]["(Wurzel)"]["symbols"] == ["long_one"]
+    assert scan["domains"]["(root)"]["symbols"] == ["long_one"]
     # Und nur sie ist lang genug für die Unwired-Prüfung.
     assert [u["symbol"] for u in scan["unwired"]] == ["long_one"]
     assert scan["unwired"][0]["lines"] == 22

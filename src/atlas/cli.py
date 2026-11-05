@@ -24,9 +24,9 @@ def _emit(payload: str, as_json: bool) -> None:
 
     if "hits" in data:
         if not data["hits"]:
-            print("Keine Treffer.")
+            print("No matches.")
             if data.get("hint"):
-                print(f"Hinweis: {data['hint']}")
+                print(f"Hint: {data['hint']}")
             return
         for hit in data["hits"]:
             print(f"{hit['path']}:{hit['line']}  § {hit['heading']}")
@@ -42,13 +42,13 @@ def _emit(payload: str, as_json: bool) -> None:
             print(f"  Path: {data['breadcrumb']}")
         print(f"  Anchor: {data['anchor']}")
         for alt in data.get("alternatives", []):
-            print(f"  Alternativ: {alt['heading']}  [{alt['anchor']}]")
+            print(f"  Alternative: {alt['heading']}  [{alt['anchor']}]")
         return
 
     if data.get("found") is False:
-        print("Nichts gefunden.")
+        print("Nothing found.")
         if data.get("hint"):
-            print(f"Hinweis: {data['hint']}")
+            print(f"Hint: {data['hint']}")
         return
 
     if "body" in data:
@@ -58,8 +58,8 @@ def _emit(payload: str, as_json: bool) -> None:
         print()
         print(data["body"])
         if data.get("truncated"):
-            print(f"\n… gekürzt ({data['chars']}/{data['total_chars']} Zeichen). "
-                  f"Weiter mit offset={data['next_offset']}")
+            print(f"\n… truncated ({data['chars']}/{data['total_chars']} chars). "
+                  f"Continue with offset={data['next_offset']}")
         return
 
     if "outline" in data:
@@ -68,7 +68,7 @@ def _emit(payload: str, as_json: bool) -> None:
 
     if "tasks" in data:
         if not data["tasks"]:
-            print("Keine Tasks.")
+            print("No tasks.")
             return
         for item in data["tasks"]:
             mark = "x" if item["done"] else " "
@@ -92,7 +92,7 @@ def _pairs(raw: list[str]) -> dict:
     result: dict = {}
     for item in raw:
         if "=" not in item:
-            raise SystemExit(f"Erwartet SPALTE=WERT, bekommen: {item!r}")
+            raise SystemExit(f"Expected COLUMN=VALUE, got: {item!r}")
         name, value = item.split("=", 1)
         result[name.strip()] = parse_scalar(value)
     return result
@@ -121,7 +121,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("where", parents=[common], help="where is a topic? (compact)")
     p.add_argument("topic")
 
-    p = sub.add_parser("search", parents=[common], help="Volltextsuche")
+    p = sub.add_parser("search", parents=[common], help="full-text search")
     p.add_argument("query")
     p.add_argument("-k", type=int, default=5)
     p.add_argument("--doc")
@@ -149,7 +149,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--sections", type=int, default=5, help="number of sections (default 5)")
     p.add_argument("--max-chars", type=int, default=8000)
     p.add_argument("--wo", type=int, help="work order number for the closing block")
-    p.add_argument("--file", dest="files", action="append", default=[], metavar="PFAD",
+    p.add_argument("--file", dest="files", action="append", default=[], metavar="PATH",
                    help="affected code file (repeatable)")
     p.add_argument("--no-rules", action="store_true", help="omit guardrails")
 
@@ -163,11 +163,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("publish", parents=[common],
                        help="append a work order status line")
-    p.add_argument("--wo", type=int, required=True, help="Work-Order-Nummer")
+    p.add_argument("--wo", type=int, required=True, help="work order number")
     p.add_argument("--status", default="done", choices=["done", "open"])
     p.add_argument("--title", default="", help="short title in parentheses")
     p.add_argument("--desc", default="", help="one sentence after it")
-    p.add_argument("--section", default="Prototyp-Meilenstein-Plan",
+    p.add_argument("--section", default="Work Orders",
                    help="heading of the target section")
     p.add_argument("--dry-run", action="store_true", help="show what would be written, write nothing")
     p.add_argument("--verify-symbols", default="",
@@ -186,18 +186,18 @@ def build_parser() -> argparse.ArgumentParser:
                        help="set cells of one row via key + column name")
     p.add_argument("--tab", required=True, help="sheet name, e.g. 'Units'")
     p.add_argument("--key", required=True, help="key column value, e.g. 'monster_goblin'")
-    p.add_argument("--set", dest="updates", action="append", default=[], metavar="SPALTE=WERT",
+    p.add_argument("--set", dest="updates", action="append", default=[], metavar="COLUMN=VALUE",
                    help="repeatable, e.g. --set HP=45 --set Status=✅")
     p.add_argument("--sheet", help="spreadsheet name or id (with several sources)")
     p.add_argument("--key-column", help="key column name (default: first column)")
     p.add_argument("--raw", action="store_true",
                    help="RAW instead of USER_ENTERED (no formula/date interpretation)")
-    p.add_argument("--dry-run", action="store_true", help="Nur den Diff zeigen")
+    p.add_argument("--dry-run", action="store_true", help="show the diff only")
 
     p = sub.add_parser("sheet-append", parents=[common],
                        help="append a new row via column names")
     p.add_argument("--tab", required=True)
-    p.add_argument("--set", dest="values", action="append", default=[], metavar="SPALTE=WERT")
+    p.add_argument("--set", dest="values", action="append", default=[], metavar="COLUMN=VALUE")
     p.add_argument("--sheet")
     p.add_argument("--dry-run", action="store_true")
 
@@ -264,11 +264,11 @@ def main(argv: list[str] | None = None) -> int:
             gdocs.load_credentials(interactive=True, client_secret=args.client_secret,
                                    scopes=gdocs.WRITE_SCOPES)
         except gdocs.SyncError as error:
-            print(f"Fehler: {error}", file=sys.stderr)
+            print(f"Error: {error}", file=sys.stderr)
             return 1
         print(json.dumps(gdocs.token_status(), ensure_ascii=False, indent=2))
-        print("\nFreigabe erteilt: Lesen, Docs-Schreiben (`publish`) "
-              "und Sheets-Schreiben (`sheet-update`).")
+        print("\nAccess granted: read, Docs write (`publish`) "
+              "and Sheets write (`sheet-update`).")
         return 0
 
     if args.command == "sync":
@@ -278,20 +278,20 @@ def main(argv: list[str] | None = None) -> int:
         try:
             result = gdocs.sync(root, query=args.query, force=args.force, conn=conn)
         except gdocs.SyncError as error:
-            print(f"Fehler: {error}", file=sys.stderr)
+            print(f"Error: {error}", file=sys.stderr)
             return 1
 
         if as_json:
             print(json.dumps(result, ensure_ascii=False, indent=2))
             return 0
         for item in result["written"]:
-            print(f"+ {item['name']}  ({item['kind']}, {item['chars']} Zeichen)")
+            print(f"+ {item['name']}  ({item['kind']}, {item['chars']} chars)")
             print(f"  -> {item['cache']}")
         for item in result["skipped"]:
             print(f"= {item['name']}  ({item['reason']})")
         for item in result["errors"]:
             print(f"! {item['name']}: {item['error']}", file=sys.stderr)
-        print(f"\nIndex: {stats(conn)['sections']} Abschnitte in {stats(conn)['docs']} Dokumenten.")
+        print(f"\nIndex: {stats(conn)['sections']} sections in {stats(conn)['docs']} documents.")
         return 1 if result["errors"] else 0
 
     if args.command == "publish":
@@ -309,7 +309,7 @@ def main(argv: list[str] | None = None) -> int:
                 verify_symbols=_symbols(args.verify_symbols),
             )
         except (gdocs.SyncError, ValueError) as error:
-            print(f"Fehler: {error}", file=sys.stderr)
+            print(f"Error: {error}", file=sys.stderr)
             return 1
 
         print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -329,7 +329,7 @@ def main(argv: list[str] | None = None) -> int:
                 verify_symbols=_symbols(args.verify_symbols),
             )
         except (gdocs.SyncError, ValueError) as error:
-            print(f"Fehler: {error}", file=sys.stderr)
+            print(f"Error: {error}", file=sys.stderr)
             return 1
 
         print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -347,8 +347,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "sheets":
             sources = sheets_mod.known_spreadsheets(conn)
             if not sources:
-                print("Kein Spreadsheet als Quelle bekannt. "
-                      "`atlas sync --query <Name>` ausführen.", file=sys.stderr)
+                print("No spreadsheet source known. "
+                      "Run `atlas sync --query <Name>` first.", file=sys.stderr)
                 return 1
             service = sheets_mod._service()
             payload = []
@@ -386,7 +386,7 @@ def main(argv: list[str] | None = None) -> int:
                     sheet=args.sheet, dry_run=args.dry_run,
                 )
         except (gdocs.SyncError, sheets_mod.SheetError) as error:
-            print(f"Fehler: {error}", file=sys.stderr)
+            print(f"Error: {error}", file=sys.stderr)
             return 1
 
         if as_json:
@@ -398,20 +398,20 @@ def main(argv: list[str] | None = None) -> int:
         prefix = "[dry-run] " if result.get("dry_run") else ""
         print(f"{prefix}{result['spreadsheet']} / {result['tab']}")
         if result.get("row_number"):
-            print(f"  Zeile {result['row_number']} · Schlüssel {result['row_key']!r} "
-                  f"in Spalte {result['key_column']!r}")
+            print(f"  Row {result['row_number']} · key {result['row_key']!r} "
+                  f"in column {result['key_column']!r}")
         for column, change in (result.get("changes") or {}).items():
             print(f"  {column} [{change['cell']}]: {change['old']!r} -> {change['new']!r}")
         if result.get("values"):
-            print("  neue Zeile: " + ", ".join(
+            print("  new row: " + ", ".join(
                 f"{column}={value!r}" for column, value in result["values"].items()
             ))
         if result.get("appended_range"):
-            print(f"  Bereich: {result['appended_range']}")
+            print(f"  range: {result['appended_range']}")
         if result.get("dry_run"):
             return 0
-        status = "verifiziert" if result.get("verified") else "NICHT verifiziert"
-        print(f"  {status}" + ("" if result.get("resynced") else " · Index nicht aktualisiert"))
+        status = "verified" if result.get("verified") else "NOT verified"
+        print(f"  {status}" + ("" if result.get("resynced") else " · index not updated"))
         if result.get("warning"):
             print(f"  ! {result['warning']}", file=sys.stderr)
         return 0 if result.get("verified") else 1
@@ -500,12 +500,12 @@ def main(argv: list[str] | None = None) -> int:
             print(json.dumps(data, ensure_ascii=False, indent=2))
             return 0 if data.get("ok") else 1
 
-        print(f"Struktur-Check: {data['sections']} Abschnitte")
+        print(f"Structure check: {data['sections']} sections")
         if managed is not None:
-            print(f"  verwaltet: {data['managed_issues']} Befunde · "
-                  f"Altbestand: {data['discovered_issues']}")
+            print(f"  managed: {data['managed_issues']} issues · "
+                  f"discovered: {data['discovered_issues']}")
         if not data["counts"]:
-            print("Keine Befunde.")
+            print("No issues found.")
             return 0
 
         for kind, count in data["counts"].items():
@@ -513,16 +513,16 @@ def main(argv: list[str] | None = None) -> int:
         print()
         for issue in data["issues"][:15]:
             where = f"{issue['path']}:{issue['line']}" if issue["path"] else "—"
-            scope = "" if issue.get("scope") == "managed" else " (Altbestand)"
+            scope = "" if issue.get("scope") == "managed" else " (discovered)"
             print(f"[{issue['severity']:<7}] {issue['type']:<18} {where}{scope}")
             print(f"          § {issue['heading']}")
             print(f"          {issue['detail']}")
         if len(data["issues"]) > 15:
-            print(f"\n… {len(data['issues']) - 15} weitere (--json für alle)")
+            print(f"\n… {len(data['issues']) - 15} more (--json for all)")
 
         if data["discovered_issues"] and not data["managed_issues"]:
-            print("\nDie Befunde betreffen nur fremde Alt-Doku — atlas-Dokumente "
-                  "sind sauber.")
+            print("\nFindings only affect discovered legacy docs — atlas-managed "
+                  "documents are clean.")
         return 0 if data.get("ok") else 1
     elif args.command == "doctor":
         from . import status as status_mod, verify

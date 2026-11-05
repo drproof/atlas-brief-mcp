@@ -81,7 +81,7 @@ def _trim_rules(text: str) -> str:
     if len(text) > RULES_LIMIT:
         cut = text.rfind("\n", 0, RULES_LIMIT)
         text = text[: cut if cut > 0 else RULES_LIMIT]
-        text += "\n\n_… weitere Regeln siehe AGENTS.md._"
+        text += "\n\n_… see AGENTS.md for further rules._"
     return text.strip()
 
 

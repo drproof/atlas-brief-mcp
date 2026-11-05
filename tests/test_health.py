@@ -37,7 +37,7 @@ def test_loud_when_write_scopes_were_lost(tmp_path, monkeypatch):
 
     found = health.warnings(tmp_path)
 
-    assert any("Schreibrechte" in text for text in found)
+    assert any("write permissions" in text for text in found)
     assert health.header(tmp_path).startswith("⚠️ [GDD-HEALTH]")
 
 

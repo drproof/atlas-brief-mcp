@@ -44,7 +44,7 @@ def test_defined_but_unused_fails(tmp_path):
     result = verify.check(root, ["dispatch_skill"])
 
     assert result["ok"] is False
-    assert "nirgends aufgerufen" in result["failed"][0]["reason"]
+    assert "never called" in result["failed"][0]["reason"]
     assert result["failed"][0]["defined"] is True
 
 
@@ -53,7 +53,7 @@ def test_missing_symbol_fails_with_other_reason(tmp_path):
     result = verify.check(root, ["dispatch_skill"])
 
     assert result["ok"] is False
-    assert result["failed"][0]["reason"] == "nicht definiert"
+    assert result["failed"][0]["reason"] == "not defined"
 
 
 def test_signal_binding_satisfies_check(tmp_path):
@@ -76,7 +76,7 @@ def test_substring_is_not_accepted_as_definition(tmp_path):
     result = verify.check(root, ["vault"])
 
     assert result["ok"] is False
-    assert result["failed"][0]["reason"] == "nicht definiert"
+    assert result["failed"][0]["reason"] == "not defined"
 
 
 def test_refusal_names_the_symbol_and_the_line(tmp_path):
@@ -84,7 +84,7 @@ def test_refusal_names_the_symbol_and_the_line(tmp_path):
     result = verify.check(root, ["dispatch_skill"])
     text = verify.refusal(result)
 
-    assert "Abnahme verweigert" in text
+    assert "Acceptance refused" in text
     assert "dispatch_skill" in text
     assert "scripts/unit.gd:1" in text
     assert "WO 8" in text
@@ -103,7 +103,7 @@ def test_publish_refuses_before_touching_the_network(tmp_path):
 
     assert result["written"] is False
     assert result["refused"] is True
-    assert "Abnahme verweigert" in result["refusal"]
+    assert "Acceptance refused" in result["refusal"]
     # Kein Google-Zugriff versucht: kein document_id im Payload.
     assert "document_id" not in result
 
@@ -124,7 +124,7 @@ def test_gate_uses_wo_symbols_file(tmp_path):
 
     gate, refusal = publish._attachment_gate(root, 8, "done", None, False)
 
-    assert refusal.startswith("Abnahme verweigert")
+    assert refusal.startswith("Acceptance refused")
     assert gate["verify"]["failed"][0]["symbol"] == "dispatch_skill"
 
 
@@ -135,7 +135,7 @@ def test_gate_warns_when_no_symbols_are_known(tmp_path):
 
     assert refusal == ""
     assert gate["verify"]["checked"] == 0
-    assert "Anbindungsnachweis" in gate["verify"]["warning"]
+    assert "wiring check" in gate["verify"]["warning"]
 
 
 def test_dry_run_reports_but_does_not_refuse(tmp_path):
@@ -161,7 +161,7 @@ def test_regression_found_for_done_work_order(tmp_path):
     assert len(findings) == 1
     assert findings[0]["wo"] == 8
     assert findings[0]["symbol"] == "dispatch_skill"
-    assert "nicht definiert" in findings[0]["reason"]
+    assert "not defined" in findings[0]["reason"]
 
 
 def test_open_work_order_is_not_checked(tmp_path):
@@ -190,7 +190,7 @@ def test_publish_skips_duplicate_with_same_status(tmp_path, monkeypatch):
 
     assert result["written"] is False
     assert result["unchanged"] is True
-    assert "nicht doppelt" in result["message"]
+    assert "not duplicated" in result["message"]
 
 
 def test_publish_switches_status_instead_of_appending(tmp_path, monkeypatch):

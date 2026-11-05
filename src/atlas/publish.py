@@ -19,14 +19,14 @@ from pathlib import Path
 
 from . import audit, gdocs, verify
 
-DEFAULT_SECTION = "Prototyp-Meilenstein-Plan"
+DEFAULT_SECTION = "Work Orders"
 
 
 def format_line(wo: int, status: str, title: str, description: str = "") -> str:
-    """'Work Order 7 — ✅ ERLEDIGT (Titel): Beschreibung'"""
+    """'Work Order 7 — ✅ DONE (Title): Description'"""
     mark = gdocs.STATUS_MARK.get(status.lower())
     if mark is None:
-        raise ValueError(f"Unbekannter Status '{status}' (erlaubt: done, open)")
+        raise ValueError(f"Unknown status '{status}' (allowed: done, open)")
     line = f"Work Order {int(wo)} — {mark}"
     if title.strip():
         line += f" ({title.strip()})"
@@ -252,9 +252,9 @@ def _attachment_gate(root: Path, wo: int, status: str,
                 "checked": 0,
                 "ok": True,
                 "warning": (
-                    "Abnahme ohne Anbindungsnachweis: keine Symbole geprüft. "
-                    "Für erledigte Work Orders in .atlas/wo-symbols.yml hinterlegen, "
-                    "sonst ist keine spätere Regression erkennbar."
+                    "Acceptance without wiring check: no symbols verified. "
+                    "Add symbols for completed work orders to .atlas/wo-symbols.yml "
+                    "so later regressions can be detected."
                 ),
             }
         }, ""
@@ -333,8 +333,8 @@ def publish(
                 "wo": int(wo),
                 "status": status.lower(),
                 "message": (
-                    f"Work Order {wo} steht bereits als '{status}' im Dokument — "
-                    "nichts angehängt. Eine Work Order wird nicht doppelt geführt."
+                    f"Work Order {wo} is already recorded as '{status}' in the document — "
+                    "nothing appended. Work orders are not duplicated."
                 ),
                 **gate,
             }
@@ -343,8 +343,8 @@ def publish(
                             client_secret=client_secret, verify_symbols=verify_symbols)
         result["reused_set_status"] = True
         result["message"] = (
-            f"Work Order {wo} existierte bereits als '{existing['status']}' — "
-            "Status umgestellt statt zweite Zeile angelegt."
+            f"Work Order {wo} already existed as '{existing['status']}' — "
+            "switched status instead of appending a second line."
         )
         return result
 
@@ -368,7 +368,7 @@ def publish(
     sources = [s for s in gdocs.known_sources(conn) if s["mimeType"] == gdocs.DOC_MIME]
     if not sources:
         raise gdocs.SyncError(
-            "Kein Google-Doc als Quelle bekannt. Erst `atlas sync --query <Name>` ausführen."
+            "No Google Doc source known. Run `atlas sync --query <Name>` first."
         )
 
     target = None
@@ -404,8 +404,8 @@ def publish(
 
     if target is None:
         raise gdocs.SyncError(
-            f"Abschnitt '{section}' in keinem Quell-Dokument gefunden. "
-            "Mit `atlas outline` die Überschriften prüfen."
+            f"Section '{section}' not found in any source document. "
+            "Check the headings with `atlas outline`."
         )
 
     document_id = target["source"]["id"]
@@ -428,7 +428,7 @@ def publish(
     payload = {
         "document_id": document_id,
         "document_name": target["source"]["name"],
-        "tab": tab_title or "(flach)",
+        "tab": tab_title or "(flat)",
         "tab_id": tab_id,
         "section": heading,
         "index": insert_index,
@@ -486,13 +486,13 @@ def publish(
         from .indexer import invalidate_sync_state
         invalidate_sync_state(conn, document_id)
         payload["warning"] = (
-            "Zeile steht im Dokument, ist aber noch nicht im Suchindex "
-            "(Drive-Export hinkt nach). `atlas status` zeigt sie gleich."
+            "Line is in the document, but not yet in the search index "
+            "(Drive export is lagging). `atlas status` will show it shortly."
         )
     if not verified:
         payload["warning"] = (
-            "Zeile wurde geschrieben, steht aber nicht im Dokument. "
-            f"Erwartet: 'Work Order {int(wo)} — {mark}'. Format im Doc prüfen."
+            "Line was written, but could not be verified in the document. "
+            f"Expected: 'Work Order {int(wo)} — {mark}'. Check formatting in the doc."
         )
     audit.log(root, "publish", wo=wo, status=status, title=title,
               document=source["name"], tab=tab_title, index=insert_index,
@@ -533,7 +533,7 @@ def set_status(
 
     new_mark = gdocs.STATUS_MARK.get(status.lower())
     if new_mark is None:
-        raise ValueError(f"Unbekannter Status '{status}' (erlaubt: done, open)")
+        raise ValueError(f"Unknown status '{status}' (allowed: done, open)")
 
     # Auch das Hochsetzen auf ✅ ist eine Abnahme — gleiche Prüfung wie oben.
     gate, refusal = _attachment_gate(root, wo, status, verify_symbols, dry_run)
@@ -561,7 +561,7 @@ def set_status(
 
         if current is not None and current["status"] == status.lower():
             return {"changed": False, "wo": int(wo), "status": status,
-                    "reason": "Status ist bereits gesetzt", **gate}
+                    "reason": "Status is already set", **gate}
         result = localwrite.set_status(root, conn, int(wo), status, dry_run=dry_run)
         return {**result, **gate}
 
@@ -569,7 +569,7 @@ def set_status(
     if current is not None:
         if current["status"] == status.lower():
             return {"changed": False, "wo": int(wo), "status": status,
-                    "reason": "Status ist bereits gesetzt"}
+                    "reason": "Status is already set"}
         marks = gdocs.MARKS_BY_STATUS.get(current["status"])
         if not marks:
             raise gdocs.SyncError(
@@ -635,7 +635,7 @@ def set_status(
                     "unchanged": True,
                     "wo": int(wo),
                     "status": status.lower(),
-                    "reason": "Status ist bereits gesetzt",
+                    "reason": "Status is already set",
                     **gate,
                 }
             samples.extend(_work_order_lines(tab_texts, wo))
@@ -647,7 +647,7 @@ def set_status(
             "document_name": source["name"],
             "old": old_text,
             "new": new_text,
-            "tab": tab_title or "(nicht eingegrenzt)",
+            "tab": tab_title or "(unscoped)",
             "tab_id": tab_id,
             "tab_locked": bool(tab_id),
             "dry_run": dry_run,
@@ -672,17 +672,17 @@ def set_status(
                 "tab_locked": tab_locked,
                 "verified": new_text in live_text,
                 "verified_via": "documents.get",
-                "current_status": now["status"] if now else "unbekannt",
+                "current_status": now["status"] if now else "unknown",
             })
             if payload["verified"] and (now is None or now["status"] != status.lower()):
                 payload["index_lag"] = True
                 from .indexer import invalidate_sync_state
 
                 invalidate_sync_state(conn, source["id"])
-                shown = now["status"] if now else "unbekannt"
+                shown = now["status"] if now else "unknown"
                 payload["warning"] = (
-                    f"Dokument ist umgestellt, der Index zeigt noch '{shown}' "
-                    "(Drive-Export hinkt nach)."
+                    f"Document was updated, but the index still shows '{shown}' "
+                    "(Drive export is lagging)."
                 )
             audit.log(root, "set_status", wo=wo, old=old_text, new=new_text,
                       document=source["name"], tab=tab_title,
@@ -691,18 +691,18 @@ def set_status(
             return payload
 
         raise gdocs.SyncError(
-            f"Zeile '{old_text}' steht im Tab '{tab_title}', ließ sich aber nicht "
-            "ersetzen — vermutlich über mehrere Text-Runs verteilt. Im Doc prüfen."
+            f"Line '{old_text}' is in tab '{tab_title}', but could not be "
+            "replaced — likely split across multiple text runs. Check the doc manually."
         )
 
     if current is None:
         raise gdocs.SyncError(
-            f"Work Order {wo} ist nicht dokumentiert. Erst `atlas publish --wo {wo} …`."
+            f"Work Order {wo} is not documented. Run `atlas publish --wo {wo} …` first."
         )
-    hint = f" Gefunden stattdessen: {'; '.join(samples)}" if samples else ""
+    hint = f" Found instead: {'; '.join(samples)}" if samples else ""
     raise gdocs.SyncError(
-        f"Statuszeile für Work Order {wo} in keinem Dokument gefunden "
-        f"(erwartet: 'Work Order {wo} — {old_marks[0]}').{hint}"
+        f"Status line for Work Order {wo} not found in any document "
+        f"(expected: 'Work Order {wo} — {old_marks[0]}').{hint}"
     )
 
 

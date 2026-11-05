@@ -367,7 +367,7 @@ def atlas_sheets() -> str:
         if not sources:
             return json.dumps({
                 "spreadsheets": [],
-                "hint": "Kein Spreadsheet als Quelle bekannt. `atlas sync --query <Name>` ausführen.",
+                "hint": "No spreadsheet source known. Run `atlas sync --query <Name>` first.",
             }, ensure_ascii=False)
         service = sheets_mod._service()
         payload = []

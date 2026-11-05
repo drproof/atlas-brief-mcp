@@ -1,7 +1,7 @@
 [project]
 name = "atlas-brief-mcp"
 version = "0.2.0"
-description = "Lokaler MCP-Index für Projekt-Dokumentation: Token-sparende Suche, verifizierte Statuszeilen, Anbindungs-Nachweis"
+description = "Local MCP index for project documentation: token-saving search, verified status lines, wiring gate"
 requires-python = ">=3.10"
 dependencies = [
     "google-api-python-client>=2.201.0",

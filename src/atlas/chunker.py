@@ -156,7 +156,7 @@ def chunk(text: str, doc_id: str, path: str, max_chars: int = MAX_CHARS) -> Doc:
         if headings[0][0] > 0:
             preamble = "\n".join(lines[: headings[0][0]]).strip()
             if preamble:
-                blocks.append((-1, 1, "(Präambel)", 0, headings[0][0] - 1))
+                blocks.append((-1, 1, "(Preamble)", 0, headings[0][0] - 1))
         for i, (idx, level, heading) in enumerate(headings):
             end = headings[i + 1][0] - 1 if i + 1 < len(headings) else len(lines) - 1
             blocks.append((idx, level, heading, idx, end))

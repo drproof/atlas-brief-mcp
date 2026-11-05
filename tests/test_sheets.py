@@ -192,7 +192,7 @@ def test_resolve_column_lists_allowed_headers():
     with pytest.raises(sheets.SheetError) as error:
         sheets.resolve_column(["ID", "Name", "HP"], "Health")
     message = str(error.value)
-    assert "Erlaubte Spalten" in message
+    assert "Allowed columns" in message
     assert "'HP'" in message
     assert "Health" in message
 
@@ -200,7 +200,7 @@ def test_resolve_column_lists_allowed_headers():
 def test_resolve_column_rejects_duplicate_header():
     with pytest.raises(sheets.SheetError) as error:
         sheets.resolve_column(["ID", "HP", "HP"], "HP")
-    assert "mehrfach" in str(error.value)
+    assert "multiple times" in str(error.value)
 
 
 def test_find_row_returns_one_based_number():
@@ -262,7 +262,7 @@ def test_update_writes_only_named_cells(wired, tmp_path):
 def test_update_unknown_column_writes_nothing(wired, tmp_path):
     with pytest.raises(sheets.SheetError) as error:
         sheets.update(tmp_path, None, "Units", "monster_goblin", {"Health": 45})
-    assert "Erlaubte Spalten" in str(error.value)
+    assert "Allowed columns" in str(error.value)
     assert wired.values_api.writes == []
 
 
@@ -298,7 +298,7 @@ def test_append_orders_values_by_header(wired, tmp_path):
 def test_append_unknown_column_lists_allowed(wired, tmp_path):
     with pytest.raises(sheets.SheetError) as error:
         sheets.append(tmp_path, None, "Units", {"Lebenspunkte": 10})
-    assert "Erlaubte Spalten" in str(error.value)
+    assert "Allowed columns" in str(error.value)
     assert wired.values_api.appends == []
 
 
@@ -345,7 +345,7 @@ def test_update_detects_row_moved_between_read_and_write(monkeypatch, tmp_path):
     assert result["written"] is True
     assert result["verified"] is False, "verschobene Zeile muss als nicht verifiziert gelten"
     assert result["row_moved"] is True
-    assert "Zeile verschoben" in result["warning"]
+    assert "Row moved" in result["warning"]
     assert result["readback"]["A2"] != "monster_goblin"
 
 

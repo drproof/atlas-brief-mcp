@@ -95,11 +95,11 @@ def test_render_warns_about_dead_function(tmp_path):
     root = _project(tmp_path)
     text = code.render(root, "swap_positions_with_ally", with_usage=True)
 
-    assert "1 Definition(en)" in text
-    assert "NIRGENDS aufgerufen" in text
-    assert "toter Code" in text
+    assert "1 definition(s)" in text
+    assert "NEVER called" in text
+    assert "dead code" in text
     # Die Anbindungszeile steht jetzt immer da, nicht nur auf Wunsch.
-    assert "0 Aufruf(e), 0 Referenz(en)" in text
+    assert "0 call(s), 0 reference(s)" in text
 
 
 def test_render_shows_call_sites(tmp_path):
@@ -111,9 +111,9 @@ def test_render_shows_call_sites(tmp_path):
     )
     text = code.render(root, "swap_positions_with_ally", with_usage=True)
 
-    assert "Aufrufe (1):" in text
+    assert "Calls (1):" in text
     assert "scripts/turn_manager.gd:2" in text
-    assert "NIRGENDS aufgerufen" not in text
+    assert "NEVER called" not in text
 
 
 def test_scene_connection_counts_as_usage(tmp_path):
@@ -135,8 +135,8 @@ def test_scene_connection_counts_as_usage(tmp_path):
     assert refs["refs"][0]["path"] == "scenes/fight.tscn"
 
     text = code.render(root, "swap_positions_with_ally")
-    assert "1 Referenz(en)" in text
-    assert "NIRGENDS aufgerufen" not in text
+    assert "1 reference(s)" in text
+    assert "NEVER called" not in text
 
 
 def test_callable_without_parens_counts_as_reference(tmp_path):

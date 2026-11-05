@@ -99,7 +99,7 @@ def test_local_publish_refuses_duplicates(tmp_path):
     second = localwrite.publish(root, conn, 2, "Work Order 2 — ⬜ OPEN (B)", "3. Work Orders")
 
     assert second["written"] is False
-    assert "existiert bereits" in second["reason"]
+    assert "already exists" in second["reason"]
 
 
 def test_unknown_work_order_explains_the_next_step(tmp_path):

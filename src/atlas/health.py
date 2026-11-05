@@ -110,8 +110,8 @@ def warnings(root) -> list[str]:
             if missing:
                 short = ", ".join(scope.rsplit("/", 1)[-1] for scope in missing)
                 found.append(
-                    f"Token hat keine Schreibrechte mehr ({short}) — "
-                    "`atlas auth` neu ausführen, sonst scheitert jeder Write."
+                    f"Token has lost write permissions ({short}) — "
+                    "re-run `atlas auth`, otherwise every write will fail."
                 )
 
     # 2. Ein Write blieb unbestätigt — und wurde nicht später bestätigt.
@@ -141,8 +141,8 @@ def warnings(root) -> list[str]:
         if pending:
             names = ", ".join(_entry_label(entry) for entry in reversed(pending))
             found.append(
-                f"Unbestätigter Schreibvorgang: {names} — Zeile steht nicht im "
-                "Dokument (Details: `atlas log`)."
+                f"Unverified write operation: {names} — line was not confirmed in the "
+                "document (details: `atlas log`)."
             )
 
     return found

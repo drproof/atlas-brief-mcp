@@ -26,7 +26,7 @@ def _conn(synced_at: str | None = None) -> sqlite3.Connection:
 
 def test_freshness_without_google_source():
     text = status_mod.freshness(_conn())
-    assert "nur lokale Dateien" in text
+    assert "local files only" in text
 
 
 def test_freshness_just_now():
@@ -34,17 +34,17 @@ def test_freshness_just_now():
     conn = _conn((now - timedelta(seconds=20)).isoformat())
     text = status_mod.freshness(conn, now=now)
 
-    assert "gerade eben" in text
-    assert "nichts Neues" in text
+    assert "just now" in text
+    assert "anything newer" in text
 
 
 def test_freshness_minutes_and_hours():
     now = datetime(2026, 11, 5, 18, 0, tzinfo=timezone.utc)
     conn = _conn((now - timedelta(minutes=12)).isoformat())
-    assert "vor 12 Min" in status_mod.freshness(conn, now=now)
+    assert "12 min ago" in status_mod.freshness(conn, now=now)
 
     conn = _conn((now - timedelta(hours=3)).isoformat())
-    assert "vor 3 Std" in status_mod.freshness(conn, now=now)
+    assert "3 h ago" in status_mod.freshness(conn, now=now)
 
 
 def test_status_text_is_readable_and_complete():
@@ -62,11 +62,11 @@ def test_status_text_is_readable_and_complete():
     }
     text = status_mod.status_text(payload)
 
-    assert "Work Orders: 2 — 1 erledigt, 1 offen" in text
+    assert "Work Orders: 2 — 1 done, 1 open" in text
     assert "✅ WO 14" in text
     assert "⬜ WO 15" in text
-    assert "Dokumente: 4" in text
-    assert "Stand:" in text
+    assert "Documents: 4" in text
+    assert "As of:" in text
     # Kein JSON-Korsett: der Agent soll die Antwort nicht nachformatieren müssen.
     assert "{" not in text
 
@@ -82,5 +82,5 @@ def test_truncation_is_announced():
     }
     text = status_mod.status_text(payload)
 
-    assert "gekürzt" in text
-    assert "1 von 60" in text
+    assert "truncated" in text
+    assert "1 of 60" in text

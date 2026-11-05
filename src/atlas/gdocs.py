@@ -69,7 +69,7 @@ def find_client_secret(explicit: str | None = None) -> Path:
     if explicit:
         path = Path(explicit).expanduser()
         if not path.exists():
-            raise SyncError(f"Client-Secret nicht gefunden: {path}")
+            raise SyncError(f"Client secret not found: {path}")
         return path
     if CLIENT_SECRET_PATH.exists():
         return CLIENT_SECRET_PATH
@@ -79,8 +79,8 @@ def find_client_secret(explicit: str | None = None) -> Path:
     if matches:
         return matches[0]
     raise SyncError(
-        "Kein OAuth-Client gefunden. Lade in der Google Cloud Console einen "
-        "Desktop-Client herunter und lege ihn als ~/.atlas/client_secret.json ab."
+        "No OAuth client found. Download a desktop client in the Google Cloud Console "
+        "and save it as ~/.atlas/client_secret.json."
     )
 
 
@@ -135,10 +135,10 @@ def load_credentials(interactive: bool = False, client_secret: str | None = None
             creds = None
 
     if not interactive:
-        needed = "Schreib-Scope (`documents`)" if any("documents" in s for s in missing) else "Lese-Scopes"
+        needed = "write scope (`documents`)" if any("documents" in s for s in missing) else "read scopes"
         raise SyncError(
-            f"Kein gültiges Google-Token für {needed}. Einmalig `atlas auth` "
-            "ausführen (öffnet den Browser zur Freigabe)."
+            f"No valid Google token for {needed}. Run `atlas auth` once "
+            "(opens the browser for consent)."
         )
 
     from google_auth_oauthlib.flow import InstalledAppFlow
@@ -187,14 +187,14 @@ def _explain(error: Exception) -> str:
         pass
 
     if "has not been used in project" in message or "accessNotConfigured" in text:
-        hint = f" Die API ist im Cloud-Projekt nicht aktiviert: {message}"
+        hint = f" The API is not enabled in the Cloud project: {message}"
         if activation:
-            hint += f"\nAktivieren unter: {activation}"
+            hint += f"\nEnable at: {activation}"
         return hint
     if "insufficient" in message.lower() or "insufficientPermissions" in text:
         return (
-            "Das Token hat zu wenig Rechte. `atlas auth --force` neu ausführen, "
-            f"damit alle Scopes bestätigt werden. ({message})"
+            "The token has insufficient permissions. Re-run `atlas auth --force` "
+            f"to confirm all scopes. ({message})"
         )
     return message
 
@@ -257,7 +257,7 @@ def export_sheet(sheets, file_id: str, max_rows: int = 2000, max_cols: str = "Z"
 
     parts: list[str] = []
     for sheet in meta.get("sheets", []):
-        title = sheet.get("properties", {}).get("title", "Blatt")
+        title = sheet.get("properties", {}).get("title", "Sheet")
         escaped = title.replace("'", "''")
         try:
             values = sheets.spreadsheets().values().get(
@@ -265,12 +265,12 @@ def export_sheet(sheets, file_id: str, max_rows: int = 2000, max_cols: str = "Z"
                 range=f"'{escaped}'!A1:{max_cols}{max_rows}",
             ).execute().get("values", [])
         except Exception as error:
-            parts.append(f"## {title}\n\n_(nicht lesbar: {_explain(error)})_\n")
+            parts.append(f"## {title}\n\n_(unreadable: {_explain(error)})_\n")
             continue
 
         parts.append(f"## {title}\n")
         if not values:
-            parts.append("_(leer)_\n")
+            parts.append("_(empty)_\n")
             continue
 
         width = max(len(row) for row in values)
@@ -319,8 +319,8 @@ def assert_writable(conn, file_id: str) -> None:
     allowed = {source["id"] for source in known_sources(conn)}
     if file_id not in allowed:
         raise SyncError(
-            f"Schreibzugriff verweigert: '{file_id}' ist keine bekannte Quelle dieses "
-            "Projekts. Erst `atlas sync --query <Name>` ausführen."
+            f"Write access denied: '{file_id}' is not a known source of this "
+            "project. Run `atlas sync --query <Name>` first."
         )
 
 
@@ -399,15 +399,15 @@ def sync(
 
     if not sources and not query:
         raise SyncError(
-            "Noch keine Quelle bekannt. Beim ersten Lauf einen Namensfilter angeben, "
-            "z. B.  atlas sync --query GOREQUEST"
+            "No source known yet. Provide a name filter on the first run, "
+            "e.g.  atlas sync --query MYPROJECT"
         )
 
     targets = sources or list_documents(drive, query=query)
     if not targets:
         raise SyncError(
-            f"Keine Google-Docs/Sheets gefunden (Suchbegriff: {query!r}). "
-            "Prüfen, ob der Name stimmt oder ob das Konto Zugriff hat."
+            f"No Google Docs/Sheets found (query: {query!r}). "
+            "Check that the name matches and the account has access."
         )
 
     from .indexer import get_sync_state, refresh, set_sync_state
@@ -435,7 +435,7 @@ def sync(
             and state["modified"] == meta.get("modifiedTime")
             and Path(state["cache_path"]).exists()
         ):
-            skipped.append({"name": name, "reason": "unverändert"})
+            skipped.append({"name": name, "reason": "unchanged"})
             continue
 
         try:

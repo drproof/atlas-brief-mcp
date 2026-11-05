@@ -89,26 +89,26 @@ def freshness(conn: sqlite3.Connection, now: datetime | None = None) -> str:
     latest = conn.execute("SELECT MAX(synced_at) FROM sync_state").fetchone()
     last = (latest[0] if latest else "") or ""
     if not last:
-        return "Stand: nur lokale Dateien (keine Google-Quelle synchronisiert)."
+        return "As of: local files only (no Google source synced)."
 
     try:
         stamp = datetime.fromisoformat(str(last).replace("Z", "+00:00"))
     except ValueError:
-        return f"Stand: letzter Sync {last}."
+        return f"As of: last sync {last}."
     if stamp.tzinfo is None:
         stamp = stamp.replace(tzinfo=timezone.utc)
 
     age = max(0, int(((now or datetime.now(timezone.utc)) - stamp).total_seconds()))
     if age < 60:
-        when = "gerade eben"
+        when = "just now"
     elif age < 3600:
-        when = f"vor {age // 60} Min"
+        when = f"{age // 60} min ago"
     else:
-        when = f"vor {age // 3600} Std"
+        when = f"{age // 3600} h ago"
 
     return (
-        f"Stand: {when} synchronisiert ({last}). Das ist die Quelle — ein zweiter "
-        "Aufruf, die CLI oder ein Blick in den Quellcode liefert nichts Neues."
+        f"As of: synced {when} ({last}). This is the source — a second "
+        "call, the CLI, or inspecting the source code will not return anything newer."
     )
 
 
@@ -117,17 +117,17 @@ def status_text(payload: dict) -> str:
     counts = payload["counts"]
     marks = {"done": "✅", "open": "⬜", "unknown": "·"}
     lines = [
-        f"Work Orders: {counts['total']} — {counts['done']} erledigt, "
-        f"{counts['open']} offen, {counts['unknown']} unklar"
+        f"Work Orders: {counts['total']} — {counts['done']} done, "
+        f"{counts['open']} open, {counts['unknown']} unknown"
     ]
     for wo in payload["work_orders"]:
         lines.append(f"  {marks[wo['status']]} WO {wo['wo']:>2}  {wo['title']}")
     if payload.get("truncated"):
-        lines.append(f"  … gekürzt ({payload.get('returned')} von "
-                     f"{counts['total']}) — `--json` liefert alle.")
+        lines.append(f"  … truncated ({payload.get('returned')} of "
+                     f"{counts['total']}) — `--json` returns all.")
     lines.append("")
-    lines.append(f"Offene Checkbox-Tasks: {payload['open_tasks']} · "
-                 f"Dokumente: {payload['docs']}")
+    lines.append(f"Open checkbox tasks: {payload['open_tasks']} · "
+                 f"Documents: {payload['docs']}")
     if payload.get("freshness"):
         lines.append(payload["freshness"])
     return "\n".join(lines)

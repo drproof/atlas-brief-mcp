@@ -37,7 +37,7 @@ class SheetError(ValueError):
 def col_letter(index: int) -> str:
     """0-basierter Spaltenindex -> A1-Buchstabe (0 -> A, 25 -> Z, 26 -> AA)."""
     if index < 0:
-        raise ValueError(f"Spaltenindex darf nicht negativ sein: {index}")
+        raise ValueError(f"Column index must not be negative: {index}")
     letters = ""
     index += 1
     while index:
@@ -51,7 +51,7 @@ def col_index(letters: str) -> int:
     value = 0
     for char in letters.strip().upper():
         if not char.isalpha():
-            raise ValueError(f"Kein Spaltenbuchstabe: {letters!r}")
+            raise ValueError(f"Not a column letter: {letters!r}")
         value = value * 26 + (ord(char) - ord("A") + 1)
     return value - 1
 
@@ -121,8 +121,8 @@ def resolve_spreadsheet(conn, hint: str | None = None) -> dict:
     sources = known_spreadsheets(conn)
     if not sources:
         raise SheetError(
-            "Kein Spreadsheet als Quelle bekannt. Einmal `atlas sync --query <Name>` "
-            "ausführen, dann steht es im Index."
+            "No spreadsheet source known. Run `atlas sync --query <Name>` once "
+            "to add it to the index."
         )
 
     if hint:
@@ -135,14 +135,14 @@ def resolve_spreadsheet(conn, hint: str | None = None) -> dict:
             return matches[0]
         if not matches:
             names = ", ".join(f"'{s['name']}'" for s in sources)
-            raise SheetError(f"Kein Spreadsheet passt zu '{hint}'. Bekannt: {names}")
+            raise SheetError(f"No spreadsheet matches '{hint}'. Known: {names}")
         names = ", ".join(f"'{s['name']}'" for s in matches)
-        raise SheetError(f"Mehrdeutig: {names}. Vollen Namen oder die ID angeben.")
+        raise SheetError(f"Ambiguous: {names}. Provide the full name or ID.")
 
     if len(sources) == 1:
         return sources[0]
     names = ", ".join(f"'{s['name']}'" for s in sources)
-    raise SheetError(f"Mehrere Spreadsheets bekannt — 'sheet' angeben: {names}")
+    raise SheetError(f"Multiple spreadsheets known — specify 'sheet': {names}")
 
 
 def list_tabs(service, spreadsheet_id: str) -> list[str]:
@@ -184,19 +184,19 @@ def resolve_column(headers: list[str], name: str) -> int:
         if not matches:
             allowed = ", ".join(repr(header) for header in headers if header)
             raise SheetError(
-                f"Unbekannte Spalte {cleaned!r}. Erlaubte Spalten: [{allowed}]"
+                f"Unknown column {cleaned!r}. Allowed columns: [{allowed}]"
             )
         if len(matches) > 1:
             raise SheetError(
-                f"Spalte {cleaned!r} kommt {len(matches)}x im Header vor — "
-                "nicht eindeutig, bitte im Blatt umbenennen."
+                f"Column {cleaned!r} appears {len(matches)}x in the header — "
+                "ambiguous, please rename it in the sheet."
             )
         index = matches[0]
 
     if headers.count(headers[index]) > 1:
         raise SheetError(
-            f"Spaltenname {headers[index]!r} ist mehrfach im Header vorhanden. "
-            "Eine Zelle lässt sich so nicht eindeutig adressieren."
+            f"Column name {headers[index]!r} appears multiple times in the header. "
+            "A cell cannot be addressed unambiguously this way."
         )
     return index
 
@@ -210,7 +210,7 @@ def find_row(
     `rows[1:]` beginnt bei Zeile 2 — die einsame Stelle, an der gezählt wird.
     """
     if not rows:
-        raise SheetError("Das Blatt ist leer — es gibt keine Header-Zeile.")
+        raise SheetError("The sheet is empty — there is no header row.")
 
     headers = headers_of(rows)
     if key_column:
@@ -220,22 +220,22 @@ def find_row(
 
     wanted = norm_key(row_key)
     if not wanted:
-        raise SheetError("row_key ist leer.")
+        raise SheetError("row_key is empty.")
 
     for offset, row in enumerate(rows[1:]):
         cell = row[key_index] if len(row) > key_index else ""
         if norm_key(cell) == wanted:
             return offset + 2, headers, list(row), key_index
 
-    column_name = headers[key_index] if len(headers) > key_index else "Spalte 1"
+    column_name = headers[key_index] if len(headers) > key_index else "column 1"
     sample = [
         str(row[key_index]) if len(row) > key_index else ""
         for row in rows[1:6]
     ]
     sample = [value for value in sample if value]
-    hint = f" Vorhandene Schlüssel (Auszug): {', '.join(sample)}" if sample else ""
+    hint = f" Existing keys (sample): {', '.join(sample)}" if sample else ""
     raise SheetError(
-        f"Kein Eintrag {row_key!r} in Spalte {column_name!r} des Blatts gefunden.{hint}"
+        f"No entry {row_key!r} found in column {column_name!r} of the sheet.{hint}"
     )
 
 
@@ -248,14 +248,14 @@ def plan_changes(
 ) -> list[dict]:
     """Mappt {Spaltenname: neuer Wert} auf konkrete Zellen mit Vorher/Nachher."""
     if not updates:
-        raise SheetError("Keine Änderungen angegeben (updates ist leer).")
+        raise SheetError("No changes provided (updates is empty).")
 
     changes: list[dict] = []
     seen: set[int] = set()
     for name, new_value in updates.items():
         index = resolve_column(headers, name)
         if index in seen:
-            raise SheetError(f"Spalte {headers[index]!r} wurde doppelt angegeben.")
+            raise SheetError(f"Column {headers[index]!r} was specified twice.")
         seen.add(index)
         old_value = row[index] if len(row) > index else ""
         changes.append({
@@ -342,7 +342,7 @@ def update(
     tabs = list_tabs(service, source["id"])
     if tab not in tabs:
         allowed = ", ".join(repr(name) for name in tabs)
-        raise SheetError(f"Tab {tab!r} existiert nicht. Vorhandene Tabs: [{allowed}]")
+        raise SheetError(f"Tab {tab!r} does not exist. Available tabs: [{allowed}]")
 
     rows = read_tab(service, source["id"], tab)
     row_number, headers, row, key_index = find_row(rows, row_key, key_column)
@@ -402,18 +402,18 @@ def update(
     if readback and not key_intact:
         payload["row_moved"] = True
         payload["warning"] = (
-            f"Zeile verschoben: in {key_cell} steht jetzt "
-            f"{readback.get(key_cell)!r} statt {row_key!r}. Der Wert ist an der "
-            "falschen Zeile gelandet — im Sheet prüfen und von Hand korrigieren."
+            f"Row moved: {key_cell} now contains "
+            f"{readback.get(key_cell)!r} instead of {row_key!r}. The value landed "
+            "on the wrong row — check the sheet and fix it manually."
         )
     if mismatched:
         payload["warning"] = (
-            "Zellen geschrieben, aber der Rücklesewert weicht ab: "
+            "Cells written, but readback value differs: "
             + "; ".join(
-                f"{c['cell']} erwartet {c['new']!r}, gelesen {readback.get(c['cell'])!r}"
+                f"{c['cell']} expected {c['new']!r}, read {readback.get(c['cell'])!r}"
                 for c in mismatched
             )
-            + ". Google kann Werte umformatieren (Checkbox -> TRUE, Formel -> Ergebnis)."
+            + ". Google may reformat values (checkbox -> TRUE, formula -> result)."
         )
 
     # --- Write-Through: Cache + FTS-Index sofort aktualisieren ---------------
@@ -445,14 +445,14 @@ def append(
     tabs = list_tabs(service, source["id"])
     if tab not in tabs:
         allowed = ", ".join(repr(name) for name in tabs)
-        raise SheetError(f"Tab {tab!r} existiert nicht. Vorhandene Tabs: [{allowed}]")
+        raise SheetError(f"Tab {tab!r} does not exist. Available tabs: [{allowed}]")
 
     header_rows = service.spreadsheets().values().get(
         spreadsheetId=source["id"], range=f"{quote_tab(tab)}!1:1"
     ).execute().get("values", [])
     headers = headers_of(header_rows)
     if not headers:
-        raise SheetError(f"Keine Header-Zeile in {tab!r} gefunden.")
+        raise SheetError(f"No header row found in {tab!r}.")
 
     unknown = [name for name in values if not any(
         str(name).strip().casefold() == header.casefold() for header in headers
@@ -460,7 +460,7 @@ def append(
     if unknown:
         allowed = ", ".join(repr(header) for header in headers if header)
         raise SheetError(
-            f"Unbekannte Spalten: {unknown}. Erlaubte Spalten: [{allowed}]"
+            f"Unknown columns: {unknown}. Allowed columns: [{allowed}]"
         )
 
     canonical: dict[int, Any] = {}

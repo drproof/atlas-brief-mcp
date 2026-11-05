@@ -229,48 +229,48 @@ def render(root, symbol: str, limit: int = 20, with_usage: bool = False) -> str:
 
     if not hits and not total:
         return (
-            f"Kein Treffer für '{symbol}' — weder als `func`/`class_name` noch als "
-            "Benutzung (inkl. .tscn-Signalverbindungen)."
+            f"No match for '{symbol}' — neither as a definition nor as "
+            "a usage (including .tscn signal connections)."
         )
 
     lines: list[str] = []
     if hits:
-        lines.append(f"{len(hits)} Definition(en) für '{symbol}':")
+        lines.append(f"{len(hits)} definition(s) for '{symbol}':")
         for hit in hits:
             lines.append(f"  {hit['path']}:{hit['line']}  {hit['signature']}")
     else:
-        lines.append(f"Keine Definition für '{symbol}' — nur benutzt, nicht definiert.")
+        lines.append(f"No definition for '{symbol}' — used, but not defined.")
 
     # Immer: die Anbindung. Kostet zwei Zeilen und verhindert WO 8.
     lines.append(
-        f"Anbindung: {usage['call_count']} Aufruf(e), "
-        f"{usage['ref_count']} Referenz(en) (Signal/Callable/.tscn)"
+        f"Wiring: {usage['call_count']} call(s), "
+        f"{usage['ref_count']} reference(s) (signal/Callable/.tscn)"
     )
 
     if hits and total == 0:
         lines.append("")
         lines.append(
-            f"⚠ '{symbol}' ist definiert, wird aber NIRGENDS aufgerufen oder gebunden — "
-            "weder per `name(`, per Signal-Callable, per `call(\"...\")` noch in einer .tscn."
+            f"⚠ '{symbol}' is defined, but NEVER called or bound — "
+            "neither via `name(`, via signal Callable, via `call(\"...\")` nor in a .tscn."
         )
-        lines.append("  Eine Implementierung ohne Aufrufer ist toter Code (vgl. WO 8).")
+        lines.append("  An implementation without a caller is dead code (see WO 8).")
     elif usage["call_count"] == 0 and usage["ref_count"] > 0:
         lines.append(
-            "  (kein direkter Aufruf, aber gebunden — Signale/Callables zählen als Anbindung)"
+            "  (no direct call, but bound — signals/Callables count as wiring)"
         )
 
     if with_usage and total:
         if usage["calls"]:
             lines.append("")
-            lines.append(f"Aufrufe ({usage['call_count']}):")
+            lines.append(f"Calls ({usage['call_count']}):")
             for hit in usage["calls"]:
                 lines.append(f"  {hit['path']}:{hit['line']}  {hit['text']}")
         if usage["refs"]:
             lines.append("")
-            lines.append(f"Referenzen ({usage['ref_count']}):")
+            lines.append(f"References ({usage['ref_count']}):")
             for hit in usage["refs"]:
                 lines.append(f"  {hit['path']}:{hit['line']}  {hit['text']}")
 
     lines.append("")
-    lines.append("_Nur Signaturen und Fundzeilen gelesen, nicht die Dateien._")
+    lines.append("_Read signatures and match lines only, not full files._")
     return "\n".join(lines)

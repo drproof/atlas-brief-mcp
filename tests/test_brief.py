@@ -28,7 +28,7 @@ def test_trim_rules_limits_long_text():
     text = "# Regeln\n" + ("- Zeile mit Inhalt\n" * 400)
     trimmed = brief._trim_rules(text)
     assert len(trimmed) <= brief.RULES_LIMIT + 60
-    assert "weitere Regeln siehe AGENTS.md" in trimmed
+    assert "see AGENTS.md for further rules" in trimmed
 
 
 def test_load_rules_prefers_agents_md(tmp_path):

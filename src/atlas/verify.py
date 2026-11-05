@@ -82,9 +82,9 @@ def check(root, symbols: list[str]) -> dict:
             "ok": bool(exact) and bound > 0,
         }
         if not exact:
-            entry["reason"] = "nicht definiert"
+            entry["reason"] = "not defined"
         elif bound == 0:
-            entry["reason"] = "definiert, aber nirgends aufgerufen oder gebunden"
+            entry["reason"] = "defined, but never called or bound"
         report.append(entry)
 
     failed = [item for item in report if not item["ok"]]
@@ -94,22 +94,22 @@ def check(root, symbols: list[str]) -> dict:
 
 def _verdict(entry: dict) -> str:
     if not entry["defined"]:
-        return f"'{entry['symbol']}' ist im Projekt nicht definiert"
+        return f"'{entry['symbol']}' is not defined in the project"
     return (
-        f"'{entry['symbol']}' ist in {entry['definition']} definiert, wird aber "
-        "nirgends aufgerufen oder gebunden (0 Aufrufe, 0 Referenzen)"
+        f"'{entry['symbol']}' is defined in {entry['definition']} but "
+        "never called or bound (0 calls, 0 references)"
     )
 
 
 def refusal(result: dict) -> str:
     """Klartext für die verweigerte Abnahme — mit Beleg, nicht mit Vorwurf."""
-    lines = ["Abnahme verweigert — Anbindungs-Nachweis fehlgeschlagen:"]
+    lines = ["Acceptance refused — wiring check failed:"]
     for entry in result["failed"]:
         lines.append(f"  ✗ {_verdict(entry)}")
     lines.append("")
     lines.append(
-        "Ein ✅ ohne Aufrufer ist die Dokumentation einer Absicht, nicht eines "
-        "Ergebnisses (vgl. WO 8). Verdrahten, dann erneut veröffentlichen."
+        "A ✅ without a caller documents an intention, not a "
+        "result (see WO 8). Wire it up, then publish again."
     )
     return "\n".join(lines)
 
@@ -121,7 +121,7 @@ def summary(result: dict) -> str:
         where = entry["definition"] or "—"
         lines.append(
             f"  {mark} {entry['symbol']}  {where}  "
-            f"{entry['calls']} Aufruf(e), {entry['refs']} Referenz(en)"
+            f"{entry['calls']} call(s), {entry['refs']} reference(s)"
         )
     return "\n".join(lines)
 

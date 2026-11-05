@@ -93,13 +93,13 @@ def main() -> int:
 
         if "error" in message:
             failures += 1
-            print(f"[FEHLER] id={message_id}: {message['error']}")
+            print(f"[ERROR] id={message_id}: {message['error']}")
             continue
 
         result = message["result"]
         if message_id == 1:
             info = result["serverInfo"]
-            print(f"[ok] initialize  -> {info['name']} {info['version']}, Protokoll {result['protocolVersion']}")
+            print(f"[ok] initialize  -> {info['name']} {info['version']}, protocol {result['protocolVersion']}")
             # Die Instructions sind die einzige Regel, die ein Client ohne
             # geladene AGENTS.md sieht — sie müssen im Handshake ankommen.
             instructions = result.get("instructions") or ""
@@ -108,32 +108,32 @@ def main() -> int:
                        if needle not in instructions]
             if missing:
                 failures += 1
-                print(f"[FEHLER] instructions unvollständig, fehlt: {missing}")
+                print(f"[ERROR] instructions incomplete, missing: {missing}")
             else:
-                print(f"[ok] instructions -> {len(instructions)} Zeichen, Guardrails im Handshake")
+                print(f"[ok] instructions -> {len(instructions)} chars, guardrails in handshake")
         elif message_id == 2:
             names = [tool["name"] for tool in result["tools"]]
-            print(f"[ok] tools/list  -> {len(names)} Tools: {', '.join(names)}")
+            print(f"[ok] tools/list  -> {len(names)} tools: {', '.join(names)}")
         elif message_id in (3, 4):
             text = result["content"][0]["text"]
             data = json.loads(text)
             label = "damage model" if message_id == 3 else "dialogue conditions"
             if data.get("found"):
                 print(f"[ok] where({label}) -> {data['path']}:{data['line']} § {data['heading']}")
-                print(f"     {len(text)} Zeichen (~{len(text)//4} Tokens), Anker {data['anchor']}")
+                print(f"     {len(text)} chars (~{len(text)//4} tokens), anchor {data['anchor']}")
             else:
                 failures += 1
-                print(f"[FEHLER] where({label}) fand nichts")
+                print(f"[ERROR] where({label}) found nothing")
         elif message_id == 5:
             data = json.loads(result["content"][0]["text"])
-            print(f"[ok] atlas_outline -> {len(data.get('outline',''))} Zeichen, truncated={data.get('truncated')}")
+            print(f"[ok] atlas_outline -> {len(data.get('outline',''))} chars, truncated={data.get('truncated')}")
         elif message_id == 6:
             data = json.loads(result["content"][0]["text"])
-            print(f"[ok] atlas_tasks  -> {data['count']} offene Tasks")
+            print(f"[ok] atlas_tasks  -> {data['count']} open tasks")
 
     if pending:
         failures += 1
-        print(f"[FEHLER] keine Antwort für ids: {sorted(pending)}")
+        print(f"[ERROR] no response for ids: {sorted(pending)}")
 
     proc.terminate()
     stderr = proc.stderr.read() if proc.stderr else ""
@@ -141,7 +141,7 @@ def main() -> int:
         print("\n--- server stderr ---")
         print(stderr.strip()[:1200])
 
-    print(f"\nFehler: {failures}")
+    print(f"\nErrors: {failures}")
     return 1 if failures else 0
 
 

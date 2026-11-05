@@ -244,7 +244,7 @@ def scan_repository(root: Path) -> dict:
         sources.append((rel, text, tokens))
 
         parts = Path(rel).parts
-        domain = parts[0] if len(parts) > 1 else "(Wurzel)"
+        domain = parts[0] if len(parts) > 1 else "(root)"
         bucket = domains.setdefault(
             domain,
             {"files": [], "tokens": 0, "symbols": [], "root": root / parts[0]},
@@ -620,7 +620,7 @@ def init_project(root, out: str | Path = "docs/ARCHITECTURE.md",
             would_create.append(f".gitignore (+{len(gitignore_missing)})")
         else:
             _ensure_gitignore(root)
-            created.append(".gitignore (ergänzt)")
+            created.append(".gitignore (updated)")
 
     report = {
         "root": str(root),

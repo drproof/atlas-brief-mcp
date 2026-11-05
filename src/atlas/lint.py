@@ -78,8 +78,8 @@ def lint(conn: sqlite3.Connection, max_issues: int = MAX_ISSUES,
                 issues.append(_issue(kind, severity, row, detail, scope))
 
         if not heading:
-            add("empty_heading", "hoch",
-                "Überschrift ohne Text — im Google Doc eine leere Überschriftenzeile")
+            add("empty_heading", "high",
+                "Heading without text — an empty heading line in the Google Doc")
 
         if heading and row["part"] == 1:
             # Nur der erste Teil zählt: part 2..n sind Fortsetzungen derselben
@@ -89,8 +89,8 @@ def lint(conn: sqlite3.Connection, max_issues: int = MAX_ISSUES,
 
         prev = previous.get(doc)
         if prev and prev[0] and row["level"] > prev[0] + 1:
-            add("level_jump", "mittel",
-                f"Sprung von H{prev[0]} auf H{row['level']} ('{prev[1][:40]}' -> '{heading[:40]}')")
+            add("level_jump", "medium",
+                f"Jump from H{prev[0]} to H{row['level']} ('{prev[1][:40]}' -> '{heading[:40]}')")
         previous[doc] = (row["level"], heading)
 
         next_level = None
@@ -100,17 +100,18 @@ def lint(conn: sqlite3.Connection, max_issues: int = MAX_ISSUES,
         # Nur ungesplittete Abschnitte prüfen: part 2..n sind Fortsetzungen und
         # naturgemäß kurz.
         if (is_leaf and row["part"] == 1 and row["parts"] == 1
-                and len(body.strip()) < 40 and heading and heading != "(Präambel)"):
-            add("empty_section", "hoch",
-                "Abschnitt ohne Inhalt und ohne Unterabschnitte")
+                and len(body.strip()) < 40 and heading
+                and heading not in ("(Preamble)", "(Präambel)")):
+            add("empty_section", "high",
+                "Section without content and without subsections")
 
         if row["chars"] and row["chars"] > 5000:
-            add("long_section", "mittel",
-                f"{row['chars']} Zeichen — Kandidat für Untergliederung")
+            add("long_section", "medium",
+                f"{row['chars']} chars — candidate for subheadings")
 
         if body.count("Tab ") >= 2 or body.count("`t.") >= 3:
-            add("toc_line", "niedrig",
-                "Navigations-/Inhaltsverzeichnis-Zeile konkurriert mit Themenseiten")
+            add("toc_line", "low",
+                "Navigation/table-of-contents line competes with topic sections")
 
         for line in body.splitlines():
             match = LINE_WO_RE.search(line)
@@ -124,13 +125,13 @@ def lint(conn: sqlite3.Connection, max_issues: int = MAX_ISSUES,
                 continue
             window = line[match.end(): match.end() + 40]
             if not STATUS_RE.search(window):
-                add("work_order_format", "hoch",
-                    f"'Work Order {match.group(1)}' mit Trenner, aber ohne Status-Marker (✅/⬜)")
+                add("work_order_format", "high",
+                    f"'Work Order {match.group(1)}' has a separator, but no status marker (✅/⬜)")
                 break
 
         if ESCAPED_RE.search(body):
-            add("export_escape", "niedrig",
-                "Export-Escapes wie '1\\.' oder '\\-' im Text")
+            add("export_escape", "low",
+                "Export escapes like '1\\.' or '\\-' in text")
 
     duplicates = {key: value for key, value in heading_seen.items() if value > 1}
     for key, value in duplicates.items():
@@ -140,16 +141,16 @@ def lint(conn: sqlite3.Connection, max_issues: int = MAX_ISSUES,
         if len(issues) < max_issues:
             issues.append({
                 "type": "duplicate_heading",
-                "severity": "niedrig",
+                "severity": "low",
                 "scope": _scope_of(path, managed),
                 "anchor": "",
                 "path": path,
                 "line": 0,
                 "heading": heading[:70],
-                "detail": f"'{heading}' kommt {value}× in {doc} vor — Anker werden durchnummeriert",
+                "detail": f"'{heading}' appears {value}× in {doc} — anchors will be numbered",
             })
 
-    order = {"hoch": 0, "mittel": 1, "niedrig": 2}
+    order = {"high": 0, "medium": 1, "low": 2}
     issues.sort(key=lambda item: (order.get(item["severity"], 3), item["type"]))
 
     managed_issues = [item for item in issues if item.get("scope") == "managed"]

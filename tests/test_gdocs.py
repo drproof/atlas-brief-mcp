@@ -6,10 +6,10 @@ from atlas.gdocs import build_query
 def test_mime_types_are_parenthesized():
     """Ohne Klammern gilt 'name contains' nur für den zweiten Mime-Typ und die
     Query liefert ALLE Google-Docs des Kontos (real passiert am 04.11.2026)."""
-    query = build_query("GOREQUEST")
+    query = build_query("MYPROJECT")
     assert query.startswith("(mimeType")
     assert "or mimeType" in query.split(")")[0]
-    assert ") and trashed = false and name contains 'GOREQUEST'" in query
+    assert ") and trashed = false and name contains 'MYPROJECT'" in query
 
 
 def test_without_filter_no_name_clause():

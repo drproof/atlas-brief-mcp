@@ -127,7 +127,7 @@ def service():
 def wired(monkeypatch, service):
     """Verdrahtet sheets.update/append ohne Netz: bekannte Quelle, Fake-Service."""
     monkeypatch.setattr(gdocs, "known_sources", lambda conn: [
-        {"id": "sheet-1", "name": "GOREQUEST Balancing", "mimeType": gdocs.SHEET_MIME}
+        {"id": "sheet-1", "name": "MYPROJECT Balancing", "mimeType": gdocs.SHEET_MIME}
     ])
     monkeypatch.setattr(gdocs, "assert_writable", lambda conn, file_id: None)
     monkeypatch.setattr(gdocs, "sync", lambda *args, **kwargs: {"written": []})
@@ -310,7 +310,7 @@ def test_resolve_spreadsheet_by_partial_name(wired):
 def test_resolve_spreadsheet_unknown_name_lists_known(wired):
     with pytest.raises(sheets.SheetError) as error:
         sheets.resolve_spreadsheet(None, "Balancing Matrix 2024")
-    assert "GOREQUEST Balancing" in str(error.value)
+    assert "MYPROJECT Balancing" in str(error.value)
 
 
 # --------------------------------------------------------------------------
@@ -333,7 +333,7 @@ def test_update_detects_row_moved_between_read_and_write(monkeypatch, tmp_path):
     service.values_api.__class__ = RaceValues
 
     monkeypatch.setattr(gdocs, "known_sources", lambda conn: [
-        {"id": "sheet-1", "name": "GOREQUEST Balancing", "mimeType": gdocs.SHEET_MIME}
+        {"id": "sheet-1", "name": "MYPROJECT Balancing", "mimeType": gdocs.SHEET_MIME}
     ])
     monkeypatch.setattr(gdocs, "assert_writable", lambda conn, file_id: None)
     monkeypatch.setattr(gdocs, "sync", lambda *args, **kwargs: {})

@@ -286,3 +286,112 @@ def test_subproject_is_marked_in_document(tmp_path):
     document = bootstrap.generate_architecture_skeleton(scan)
     assert "Sub-Projekt" in document
     assert "dungeon/project.godot" in document
+
+
+TS_APP = """import React from "react";
+
+export function calculateRevenue(
+  studio: StudioData,
+  year: number,
+): RevenueResult {
+  const base = studio.rate * year;
+  const bonus = studio.bonus ?? 0;
+  return { total: base + bonus };
+}
+
+export const Modal = React.memo(({ isOpen }: Props) => {
+  if (!isOpen) return null;
+  return <div />;
+});
+
+export const Input = forwardRef<HTMLInputElement, Props>((props, ref) => {
+  return <input ref={ref} {...props} />;
+});
+
+function internalHelper(value: number) {
+  const a = value * 1;
+  const b = a + 2;
+  const c = b * 3;
+  const d = c - 4;
+  const e = d / 5;
+  const f = e + 6;
+  const g = f * 7;
+  const h = g - 8;
+  const i = h + 9;
+  const j = i * 10;
+  const k = j - 11;
+  const l = k + 12;
+  const m = l * 13;
+  const n = m - 14;
+  const o = n + 15;
+  return Math.round(o);
+}
+"""
+
+
+def _ts_project(tmp_path, files: dict[str, str]):
+    root = tmp_path / "tsproj"
+    for name, content in files.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+    return root
+
+
+def test_typescript_multiline_signature_is_detected(tmp_path):
+    """`export function x(\n …\n): T {` — die Klammer steht auf einer anderen Zeile."""
+    root = _ts_project(tmp_path, {"src/services.ts": TS_APP})
+    names = {name for name, _start, _line in bootstrap._iter_defs(TS_APP)}
+    assert "calculateRevenue" in names
+
+
+def test_react_wrappers_are_detected(tmp_path):
+    """`React.memo((…) =>` und `forwardRef<…>((…) =>` sind Arrow-Functions."""
+    root = _ts_project(tmp_path, {"src/components.tsx": TS_APP})
+    names = {name for name, _start, _line in bootstrap._iter_defs(TS_APP)}
+    assert "Modal" in names
+    assert "Input" in names
+
+
+def test_unused_ts_helper_is_reported(tmp_path):
+    """Der Wrapper-Erkennung sei Dank: nur der wirklich ungenutzte Helfer bleibt."""
+    root = _ts_project(tmp_path, {"src/services.ts": TS_APP})
+    unwired = {item["symbol"] for item in bootstrap.scan_repository(root)["unwired"]}
+
+    assert "internalHelper" in unwired
+    assert "calculateRevenue" not in unwired   # export function = angebunden? nein: nur Definition
+    assert "Modal" not in unwired
+
+
+def test_control_structures_are_not_functions(tmp_path):
+    """`if (x) {` sieht wie eine Methode aus, ist keine."""
+    root = _ts_project(tmp_path, {"src/flow.ts": (
+        "export function decide(value: number) {\n"
+        "  if (value > 0) {\n"
+        "    return 'positive';\n"
+        "  }\n"
+        "  for (let i = 0; i < 3; i++) {\n"
+        "    value += i;\n"
+        "  }\n"
+        "  return 'negative';\n"
+        "}\n"
+    )})
+    names = {item["symbol"] for item in bootstrap.scan_repository(root)["unwired"]}
+    symbols = bootstrap.scan_repository(root)["domains"]["src"]["symbols"]
+
+    assert "if" not in symbols
+    assert "for" not in symbols
+    assert "decide" in symbols
+
+
+def test_entry_file_export_default_is_not_unwired(tmp_path):
+    """`App.tsx` wird vom Bundler gemountet — `export default` braucht keinen Aufrufer."""
+    root = _ts_project(tmp_path, {"src/App.tsx": (
+        "export default function Dashboard() {\n"
+        + "".join(f"  const row_{i} = {i};\n" for i in range(16))
+        + "  return <div />;\n"
+        "}\n"
+    )})
+    unwired = {item["symbol"] for item in bootstrap.scan_repository(root)["unwired"]}
+
+    assert "Dashboard" not in unwired

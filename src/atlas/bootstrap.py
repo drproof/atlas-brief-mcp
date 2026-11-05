@@ -16,7 +16,8 @@ import re
 from datetime import datetime
 from pathlib import Path
 
-SOURCE_EXTS = (".gd", ".py", ".ts", ".js", ".rs", ".cs", ".go")
+SOURCE_EXTS = (".gd", ".py", ".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs",
+               ".rs", ".cs", ".go", ".java", ".kt", ".swift")
 SKIP_DIRS = {
     ".git", ".atlas", ".gdd", ".godot", "node_modules", ".venv", "venv",
     "__pycache__", "build", "dist", "target", "_archive", "_legacy_archive",
@@ -25,12 +26,6 @@ SKIP_DIRS = {
 HOTSPOT_TOKENS = 10_000
 UNWIRED_MIN_LINES = 15
 TOKENS_PER_CHAR = 3.5  # konservative Schätzung; konsistent mit dem Rest des Tools
-
-DEF_RE = re.compile(
-    r"^[ \t]*(?:static[ \t]+)?(?:func|def|function|fn|public|private|async)[ \t]+"
-    r"(?P<name>[A-Za-z_]\w*)[ \t]*\(",
-    re.MULTILINE,
-)
 
 
 def estimate_tokens(text: str) -> int:
@@ -53,12 +48,73 @@ def _iter_sources(root: Path):
                 yield Path(dirpath) / name
 
 
-VIRTUAL_NAMES = {
-    "_ready", "_init", "_process", "_physics_process", "_input", "_unhandled_input",
-    "_unhandled_key_input", "_enter_tree", "_exit_tree", "_draw", "_notification",
-    "_to_string", "__init__", "__str__", "__repr__", "constructor", "render", "componentDidMount",
+SKIP_KEYWORDS = {
+    # Kontrollstrukturen — sehen wie Methoden aus, sind keine
+    "if", "for", "while", "switch", "catch", "else", "do", "try", "with",
+    "return", "function", "constructor", "super", "this", "new", "typeof",
+    # Godot-Virtuals — die Engine ruft sie
+    "_ready", "_init", "_process", "_physics_process", "_input",
+    "_unhandled_input", "_unhandled_key_input", "_enter_tree", "_exit_tree",
+    "_draw", "_notification", "_to_string", "__init__", "__str__", "__repr__",
+    # Framework-Hooks, die das Framework ruft
+    "render", "ngOnInit", "ngOnDestroy", "componentDidMount", "componentWillUnmount",
 }
+DEF_PATTERNS = (
+    # GDScript / Python / Rust
+    re.compile(
+        r"^[ \t]*(?:static[ \t]+)?(?:func|def|fn)[ \t]+(?P<name>[A-Za-z_]\w*)[ \t]*\(",
+        re.MULTILINE,
+    ),
+    # JS/TS: [export [default]] [async] function name( — die schließende Klammer
+    # darf auf einer späteren Zeile stehen (mehrzeilige TS-Signaturen).
+    re.compile(
+        r"^[ \t]*(?:export[ \t]+(?:default[ \t]+)?)?(?:async[ \t]+)?function[ \t]*\*?[ \t]*"
+        r"(?P<name>[A-Za-z_$][\w$]*)[ \t]*\(",
+        re.MULTILINE,
+    ),
+    # JS/TS: [export] const name = [Wrapper<…>(] [async] (…) =>  |  = function(
+    # Der Wrapper-Part deckt React.memo(, forwardRef<…>( und ähnliche Higher-Order-
+    # Komponenten ab — sonst fehlen ausgerechnet die komplexen UI-Komponenten.
+    re.compile(
+        r"^[ \t]*(?:export[ \t]+(?:default[ \t]+)?)?(?:const|let|var)[ \t]+"
+        r"(?P<name>[A-Za-z_$][\w$]*)[ \t]*(?::[^=\n]+)?=[ \t]*"
+        r"(?:[A-Za-z_$][\w$.]*(?:<[^>\n]*>)?\([ \t]*)?"
+        r"(?:async[ \t]+)?(?:\([^)\n]*\)[^\n=]*?=>|function[ \t]*\()",
+        re.MULTILINE,
+    ),
+)
+
+# Dateien, die ein Bundler oder Router von außen mountet: `export default`
+# braucht dort keinen Aufruf im eigenen Code.
+ENTRY_FILES = {
+    "app.tsx", "app.jsx", "app.ts", "app.js",
+    "main.tsx", "main.jsx", "main.ts", "main.js",
+    "index.tsx", "index.jsx", "index.ts", "index.js",
+    "page.tsx", "page.jsx", "layout.tsx", "layout.jsx",
+    "route.ts", "route.tsx", "not-found.tsx", "error.tsx", "loading.tsx",
+}
+
+# Ab dieser Rumpflänge gilt eine Funktion als Kern-Symbol einer Domäne.
 CORE_SYMBOL_MIN_LINES = 8
+
+
+def _iter_defs(text: str):
+    """(name, startzeile, definitionszeile) für alle erkannten Funktionen."""
+    seen: set[tuple[str, int]] = set()
+    for pattern in DEF_PATTERNS:
+        for match in pattern.finditer(text):
+            name = match.group("name")
+            if not name or name in SKIP_KEYWORDS:
+                continue
+            start = text.count("\n", 0, match.start())
+            key = (name, start)
+            if key in seen:
+                continue
+            seen.add(key)
+            line_start = text.rfind("\n", 0, match.start()) + 1
+            line_end = text.find("\n", match.start())
+            line = text[line_start: line_end if line_end != -1 else len(text)]
+            yield name, start, line
 
 
 def _func_body_end(lines: list[str], start: int) -> int:
@@ -117,11 +173,7 @@ def _core_symbols(text: str, limit: int = 12) -> list[str]:
     """
     lines = text.splitlines()
     sized: list[tuple[int, str]] = []
-    for match in DEF_RE.finditer(text):
-        name = match.group("name")
-        if name in VIRTUAL_NAMES:
-            continue
-        start = text.count("\n", 0, match.start())
+    for name, start, _line in _iter_defs(text):
         length = _func_body_end(lines, start) - start + 1
         if length < CORE_SYMBOL_MIN_LINES:
             continue
@@ -251,14 +303,17 @@ def _find_unwired(sources: list[tuple[str, str, int]]) -> list[dict]:
 
     for rel, text, _tokens in sources:
         lines = text.splitlines()
-        for match in DEF_RE.finditer(text):
-            name = match.group("name")
+        is_entry = Path(rel).name.lower() in ENTRY_FILES
+        for name, start, def_line in _iter_defs(text):
             if name in seen or len(name) < 4:
                 continue
             # Test-Konventionen (pytest, unittest, JS-Test-Runner)
             if name.startswith("test_") or name.startswith("Test") or name.endswith("_test"):
                 continue
-            start = text.count("\n", 0, match.start())
+            # Ein `export default` in App.tsx/page.tsx/route.ts mountet der
+            # Bundler oder Router von außen — kein fehlender Aufrufer.
+            if is_entry and "export default" in def_line:
+                continue
             # Dekorator über der Definition (auch mehrzeilig) = an ein Framework
             # gebunden, kein fehlender Aufrufer.
             if _has_decorator(lines, start):

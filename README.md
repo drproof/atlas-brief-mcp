@@ -236,7 +236,39 @@ one row and overwrites its neighbour.
   not from a model. Auditable, offline, milliseconds.
 - **Writes**: atomic, verified by reading back, logged to `.atlas/mutations.log`.
 
-Measured on a real project (5-tab doc, 124 sections, 218 GDScript files):
+### Measure it on your own project
+
+The numbers below come from one real project of ours. You don't have to trust
+them — run the same measurement on yours:
+
+```bash
+cd your-project
+atlas init          # or point at existing docs
+atlas measure       # naive read vs. index, per question
+```
+
+```
+Documents: 4 · naive baseline: 28,011 tokens per question
+
+Question                                           naive   atlas   saved
+------------------------------------------------------------------------
+Where is 7.6 Built engine features described?     28,011     885     97%
+Where is 01_Units_Stats described?                28,011     689     98%
+...
+------------------------------------------------------------------------
+Total                                            224,088   5,945     97%
+```
+
+By default the questions are derived from your section headings — which means
+each one contains part of its own answer, so the saving is optimistic. The
+report says so. For an independent test, write your own questions in a file:
+
+```bash
+atlas measure --questions my-questions.txt    # one per line
+```
+
+Reference values from that real project (5-tab doc, 124 sections, 218 GDScript
+files) — measured the same way:
 
 | Task | Without atlas | With atlas |
 |---|---|---|

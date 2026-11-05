@@ -201,6 +201,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--sheet")
     p.add_argument("--dry-run", action="store_true")
 
+    p = sub.add_parser("measure", parents=[common],
+                       help="token cost per question: naive read vs. index")
+    p.add_argument("--questions", help="file with one question per line")
+    p.add_argument("--sample", type=int, default=8,
+                   help="number of generated questions (default 8)")
+    p.add_argument("--limit", type=int, default=12,
+                   help="rows shown in the table (default 12)")
+
     sub.add_parser("doctor", parents=[common], help="diagnostics")
 
     p = sub.add_parser("init", parents=[common],
@@ -524,6 +532,22 @@ def main(argv: list[str] | None = None) -> int:
             print("\nFindings only affect discovered legacy docs — atlas-managed "
                   "documents are clean.")
         return 0 if data.get("ok") else 1
+    elif args.command == "measure":
+        from . import measure as measure_mod
+
+        questions = None
+        if args.questions:
+            path_obj = Path(args.questions)
+            questions = [
+                line.strip() for line in path_obj.read_text(encoding="utf-8").splitlines()
+                if line.strip() and not line.strip().startswith("#")
+            ]
+        payload = measure_mod.measure(root, conn, questions=questions, sample=args.sample)
+        if as_json:
+            print(json.dumps(payload, ensure_ascii=False, indent=2))
+        else:
+            print(measure_mod.render(payload, limit=args.limit))
+
     elif args.command == "doctor":
         from . import status as status_mod, verify
 

@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 
 WO_RE = re.compile(r"Work\s*Order\s*(\d+)", re.IGNORECASE)
 DONE_RE = re.compile(r"✅|☑|ERLEDIGT|ABGESCHLOSSEN|\bDONE\b", re.IGNORECASE)
-OPEN_RE = re.compile(r"⬜|☐|OFFEN|AUSSTEHEND|\bTODO\b|\[ \]", re.IGNORECASE)
+OPEN_RE = re.compile(r"⬜|☐|OFFEN|OPEN|AUSSTEHEND|\bTODO\b|\[ \]", re.IGNORECASE)
 SYMBOL_RE = re.compile(r"`([A-Za-z_][A-Za-z0-9_]{2,})(?:\(\))?`")
 
 

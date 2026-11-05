@@ -1,233 +1,273 @@
-# atlas — Projekt-Doku als Index, nicht als Kontextfresse
+# atlas
 
-Ein lokaler MCP-Server für Coding-Agenten. Der Agent fragt „Wo steht das
-Kampfsystem?" und bekommt **Datei, Zeile und Abschnitt** zurück — nicht das
-ganze Dokument.
+Project documentation as an index, not as context fuel.
 
-Ein 5-Tab-Google-Doc mit 124 Abschnitten kostet **20.364 Tokens**, wenn man es
-liest. Die Antwort auf dieselbe Frage kostet **875**. Gemessen, nicht geschätzt.
+A local MCP server for coding agents. Ask "where is the combat system
+described?" and get back **file, line and anchor** — not 40,000 tokens of
+document you have to read, pay for, and mostly ignore.
+
+Works with any folder of Markdown. Optionally indexes Google Docs & Sheets
+when that is where your documentation lives.
 
 ```
-Frage:   "Wo finde ich das Kampfsystem?"
-Antwort: gdd/02-kampfsystem.md:10  § 2. Kampfsystem
-         284 Zeichen ≈ 84 Tokens        (statt ~2.000 für das Dokument)
+Without atlas:  read the whole doc        20,364 tokens
+With atlas:     atlas_where → atlas_read    875 tokens   (−96%)
 ```
-
-Kein Vektor-Index, kein Embedding-Modell, kein API-Key. SQLite-FTS5 mit
-BM25-Ranking, deutschen Stoppwörtern, Umlaut-Folding und Alias-Map.
 
 ---
 
-## Was es kann
+## The problem it actually solves
 
-**1. Finden statt lesen.** `atlas_where` → Anker, `atlas_read` → Abschnitt.
-Ein Abschnitt statt eines Dokuments. Antworten sind hart budgetiert: 400 bis
-3.000 Zeichen, nie „hier ist alles".
+An agent implemented 1,070 lines, forgot the single dispatcher call, and
+reported "done". The next cleanup run saw an unused-function warning and
+deleted all of it. The work was gone — because nobody noticed that a
+function without a caller is not a feature.
 
-**2. Briefs statt Aufgabenbeschreibungen.** `atlas_brief("Skill-System
-implementieren")` liefert die relevanten Abschnitte, die betroffenen
-Code-Dateien und die Projektregeln als ein Dokument — der Prompt für einen
-Subagenten, statt ihn raten zu lassen.
-
-**3. Abnahme mit Nachweis.** `atlas_publish` schreibt eine Statuszeile ins
-Dokument und liest sie zurück, bevor es Erfolg meldet. Und es **verweigert** die
-Abnahme, wenn ein Symbol zwar definiert, aber nirgends aufgerufen ist:
+`atlas` refuses that acceptance:
 
 ```json
 {
   "written": false,
   "refused": true,
-  "refusal": "Abnahme verweigert — Anbindungs-Nachweis fehlgeschlagen:\n  ✗ '_dispatch_unit_class_skill' ist in scripts/turn_manager.gd:3774 definiert, wird aber nirgends aufgerufen oder gebunden (0 Aufrufe, 0 Referenzen)\n\nEin ✅ ohne Aufrufer ist die Dokumentation einer Absicht, nicht eines Ergebnisses."
+  "refusal": "Acceptance refused — wiring check failed:\n  ✗ '_dispatch_unit_class_skill' is defined in scripts/turn_manager.gd:3774 but never called or bound (0 calls, 0 references)\n\nA ✅ without a caller documents an intention, not a result."
 }
 ```
 
-Das ist der Grund, warum es dieses Tool gibt. Ein Agent hatte 1.070 Zeilen
-implementiert, den Aufrufer vergessen und „fertig" gemeldet. Der nächste
-Compiler-Hotfix sah die Warnung „unused function" und löschte alles. Die Arbeit
-war weg, weil niemand gemerkt hatte, dass eine Funktion ohne Aufrufer kein
-Feature ist.
+That check runs **before** any network or filesystem write, so it costs nothing
+when it blocks. It has caught this exact class of mistake twice in real use.
 
 ---
 
-## Quickstart (offline, ohne Google)
+## Install
+
+Requires Python 3.10+ and [uv](https://docs.astral.sh/uv/) (or pipx).
+
+```bash
+# recommended
+uv tool install git+https://github.com/drproof/atlas-brief-mcp
+
+# or with pipx
+pipx install git+https://github.com/drproof/atlas-brief-mcp
+
+# or from a clone, for development
+git clone https://github.com/drproof/atlas-brief-mcp
+cd atlas-brief-mcp
+uv sync
+uv run atlas --help
+```
+
+If `atlas` is not found afterwards, `uv tool` put it in `~/.local/bin`
+(Windows: `%USERPROFILE%\.local\bin`) — add that to your `PATH`, or run
+`uv tool update-shell` once.
+
+Verify:
+
+```bash
+atlas --help          # 22 subcommands
+```
+
+No Google account, no API key, no network access is needed for any of this.
+
+---
+
+## Quickstart (offline, 30 seconds)
 
 ```bash
 git clone https://github.com/drproof/atlas-brief-mcp
 cd atlas-brief-mcp
-uv sync
 
-# Mitgeliefertes Demo-Repo indizieren
-uv run atlas --root examples/demo doctor
-uv run atlas --root examples/demo where "Wo finde ich das Kampfsystem?"
-uv run atlas --root examples/demo brief "Schadensberechnung"
+atlas --root examples/demo doctor
+atlas --root examples/demo where "Where is the combat system?"
+atlas --root examples/demo brief "damage calculation"
 ```
 
-Läuft mit **jedem Ordner voller Markdown**. `docs/`, `specs/`, `atlas/` oder
-`gdd/` — alles, was `.md` ist, wird indiziert. Der Index landet in
-`<root>/.atlas/index.sqlite` und ist jederzeit löschbar; er wird aus dem
-Markdown neu gebaut. Das Markdown bleibt die Wahrheit.
+Any folder of `.md` files works — `docs/`, `specs/`, `atlas/`, `gdd/`. The index
+lands in `<root>/.atlas/index.sqlite`, is regenerable at any time, and your
+Markdown stays the source of truth.
 
 ---
 
-## Bestehendes Repo erfassen
+## Bootstrap an existing repository
 
 ```bash
-cd dein-projekt
-uv run atlas init
+cd your-project
+atlas init
 ```
 
-Scannt das Repository (kein LLM, kein Netzwerk, unter 2 Sekunden), schreibt
-`docs/ARCHITECTURE.md` mit:
+Scans the repository — no LLM, no network, **under 0.3 seconds for 50 files** —
+and writes `docs/ARCHITECTURE.md` containing:
 
-- **Domänen**: jeder Quellordner mit Dateien, Zeilen, Tokenschätzung und
-  Kern-Symbolen
-- **Kontext-Hotspots**: Dateien über 10.000 Tokens, die man nie am Stück lesen darf
-- **Unverdrahtete Symbole**: Funktionen über 15 Zeilen, deren Name außerhalb
-  der Definition nirgends vorkommt — die Kandidaten für „implementiert, aber
-  nie angeschlossen"
+- **Domains**: every source folder with files, line counts, token estimates and
+  the largest functions per domain (not the first ones — those are getters)
+- **Context hotspots**: files over 10,000 tokens that must never be read whole
+- **Unwired symbols**: functions over 15 lines whose name appears nowhere else —
+  candidates for "implemented but never connected"
 
-Dazu `AGENTS.md`, `.antigravityrules`, `.mcp.json` und `.atlas/` in
-`.gitignore` — **aber nur, wenn sie nicht existieren.** `atlas init` überschreibt
-nichts. Ein Bootstrap, der deine handgeschriebenen Regeln plattmacht, wird genau
-einmal benutzt.
+It also writes `AGENTS.md`, `.antigravityrules`, `.mcp.json` and adds `.atlas/`
+to `.gitignore` — **but only if they don't exist.** `atlas init` never
+overwrites your rules. A bootstrap that flattens hand-written conventions gets
+used exactly once.
 
 ```bash
-atlas init --dry-run            # zeigt, was entstehen würde — schreibt nichts
-atlas init --out docs/ARCH.md   # anderer Pfad
-atlas init --force              # Doku bewusst neu erzeugen
+atlas init --dry-run            # show what would be created, write nothing
+atlas init --out docs/ARCH.md   # different path
+atlas init --force              # regenerate deliberately
 ```
 
-`init` merkt sich in `.atlas/managed.json`, welche Dokumente es erzeugt hat.
-`atlas lint` unterscheidet danach: **verwaltete** Dokumente müssen sauber sein
-(Exit-Code 1), **gefundene** Alt-Doku wird als Hinweis gezeigt, ohne die Abnahme
-zu blockieren. Ohne `managed.json` — also in jedem Projekt vor dem ersten `init`
-— gilt weiter alles als verwaltet.
+`init` records what it created in `.atlas/managed.json`. `atlas lint` uses that
+to separate **managed** documents (must be clean, exit code 1) from **discovered**
+legacy docs (reported as hints, exit code 0). Without `managed.json` — in every
+project before the first `init` — everything counts as managed, exactly as
+before.
+
+### What it understands
+
+GDScript, Python, TypeScript/JavaScript (including `React.memo(...)` and
+`forwardRef<...>(...)` wrappers), Rust, C#, Go, Java, Kotlin, Swift. Test
+functions (`test_*`, `Test*`, `*_test`) and framework-bound functions
+(`@decorator`, `@mcp.tool()`) are not reported as unwired — a warning list that
+is 75% noise gets ignored.
 
 ---
 
-## Schreiben ohne Google-Konto
+## Writing without Google
 
-`atlas init` legt eine `docs/ARCHITECTURE.md` mit `Work Order 1 — ⬜ OFFEN` an.
-Ist kein Google-Dokument an das Projekt gebunden, schreibt `atlas` direkt in
-diese Datei — gleicher Vertrag, gleiche Verifikation (Rücklesen aus der Datei),
-gleiches Audit-Log:
-
-```bash
-atlas set-status --wo 1 --status done    # ⬜ OFFEN -> ✅ ERLEDIGT in der Markdown-Datei
-atlas status                            # liest den neuen Stand
-```
-
-Damit funktioniert der ganze Kreis — `init` → `where`/`read` → `code` →
-`set-status` mit Anbindungs-Gate → `doctor` — **ohne Cloud-Konto, ohne
-Netzwerk.** Erst wenn ein Google-Dokument die Quelle ist, braucht es `atlas auth`.
-
-## Google Docs & Sheets (optional)
-
-Wenn die Doku in Google Docs lebt statt in Markdown, indiziert `atlas` sie über
-die Docs-API — inklusive mehrerer Dokument-Tabs.
+`atlas init` creates `docs/ARCHITECTURE.md` with `Work Order 1 — ⬜ OPEN`.
+If no Google document is bound to the project, `atlas` writes straight into that
+file — same contract, same verification (read back from disk), same audit log:
 
 ```bash
-atlas auth                     # einmalig: OAuth-Consent im Browser
-atlas sync --query GOREQUEST   # Dokumente in den Cache holen
-atlas status                   # Work Orders mit Status
-atlas publish --wo 7 --title "Mission 1" --desc "Räume 1–9"
+atlas set-status --wo 1 --status done    # ⬜ OPEN -> ✅ DONE in the Markdown file
+atlas status                            # reads the new state
 ```
 
-Drei Details, die den Unterschied machen:
-
-- **Gelesen wird exportiert, geurteilt wird direkt.** Der Suchindex wird aus dem
-  Drive-Export gefüllt; die Verifikation nach einem Write läuft über
-  `documents.get`, weil die Docs-API nach `batchUpdate` sofort konsistent ist und
-  der Drive-Export 0,5–2 Sekunden nachhinkt. Wer über den Export verifiziert,
-  baut sich ein `verified: false` ein, das keines ist.
-- **Schreiben ist append-only mit Revisionssperre.** `requiredRevisionId`
-  verhindert, dass ein Write auf einer veralteten Revision landet.
-- **Statuswechsel per `tabsCriteria`.** Google Docs hat Tabs; `replaceAllText`
-  ohne Tab-Sperre ändert denselben String auch in Archiv-Kopien.
-
-Balancing-Werte gehen über `atlas_sheet_update` — mit `row_key` und
-**Spaltenname**, nie mit Zellkoordinate. Ein Agent, der `C14` schreibt, verzählt
-sich um eine Zeile und überschreibt den Nachbarn.
+So the whole loop — `init` → `where`/`read` → `code` → `set-status` with the
+wiring gate → `doctor` — works **without a cloud account and without a network.**
 
 ---
 
-## MCP andocken
+## Connect your agent
 
-**Claude Code** — `.mcp.json` im Projektroot:
+The server speaks MCP over stdio. Once `atlas` is on your `PATH`, the config is
+three lines everywhere.
+
+**Claude Code / Cursor / any `.mcp.json` client** — in the project root:
 
 ```json
 {
   "mcpServers": {
     "atlas": {
-      "command": "C:/Pfad/zu/atlas-brief-mcp/.venv/Scripts/python.exe",
-      "args": ["-m", "atlas", "serve"],
+      "command": "atlas",
+      "args": ["serve"],
       "env": { "ATLAS_ROOT": "." }
     }
   }
 }
 ```
 
-`ATLAS_ROOT=.` wird relativ zum Arbeitsverzeichnis des Clients aufgelöst — eine
-Installation genügt für alle Projekte.
+**Claude Desktop** — same block in `claude_desktop_config.json`. On Windows use
+`"command": "atlas.exe"` if the bare name is not resolved.
 
-**Antigravity** — Eintrag in `~/.gemini/config/mcp_config.json`, gleiche Struktur.
+**Antigravity** — same structure in `~/.gemini/config/mcp_config.json`.
 
-Der Server bringt eigene `instructions` mit. Der Client liest sie beim Verbinden
-und weiß dadurch, dass Doku-Fragen über `atlas_where` laufen — nicht über
-`Read`/`Grep`, und dass ein Statusaufruf keiner Bestätigung durch die CLI bedarf.
+`ATLAS_ROOT=.` resolves relative to the client's working directory, so one
+installation serves every project. The server ships its own `instructions`: the
+client reads them on connect and knows that doc questions go through
+`atlas_where`, not `Read`/`Grep`, and that one tool call is enough — no
+verification round-trip through the CLI.
 
-### Die 15 Tools
+---
 
-| Tool | Zweck |
+## The 15 tools
+
+| Tool | Purpose |
 |---|---|
-| `atlas_where` / `atlas_search` | Thema → Anker (BM25, deutsche Stoppwörter) |
-| `atlas_read` | Anker → Abschnitt im Volltext, Budget-kontrolliert |
-| `atlas_outline` | Gliederung eines Dokuments |
-| `atlas_tasks` | offene Checkbox-Tasks |
-| `atlas_links` | Querverweise eines Abschnitts |
-| `atlas_brief` | Task-Brief: Abschnitte + Dateien + Projektregeln |
-| `atlas_code_find` | Symbol → Datei, Zeile, Signatur **und Anbindung** |
-| `atlas_status` | Work Orders, mit Zeitstempel der letzten Synchronisation |
-| `atlas_publish` / `atlas_set_status` | Statuszeile schreiben / abhaken, verifiziert |
-| `atlas_sheets` / `atlas_sheet_update` / `atlas_sheet_append` | Tabellen lesen/schreiben |
-| `atlas_lint` | Struktur- und Formatprüfung |
+| `atlas_where` / `atlas_search` | topic → anchor (BM25, German + English stop words) |
+| `atlas_read` | anchor → full section, budget-controlled |
+| `atlas_outline` | document outline |
+| `atlas_tasks` | open checkbox tasks |
+| `atlas_links` | cross-references of a section |
+| `atlas_brief` | task brief: sections + files + project rules |
+| `atlas_code_find` | symbol → file, line, signature **and wiring** (calls/refs) |
+| `atlas_status` | work orders, with a freshness timestamp |
+| `atlas_publish` / `atlas_set_status` | write / close a status line, verified |
+| `atlas_sheets` / `atlas_sheet_update` / `atlas_sheet_append` | read/write spreadsheets |
+| `atlas_lint` | structure and format check |
 
 ---
 
-## Wie es funktioniert
+## Google Docs & Sheets (optional)
 
-- **Index**: SQLite mit FTS5 (`external content`), BM25-Ranking, Präfix-Suche.
-  Section-Anker statt Datei-Granularität: ~60 Tokens Treffer statt 2.000.
-- **Deutsch**: Umlaut-Folding, Stoppwörter, Komposita-Zerlegung — aber nur, wenn
-  beide Teile im Vokabular stehen. Lieber null Treffer als ein falscher.
-- **Kein Embedding**: Synonyme kommen aus `.atlas/aliases.yml` im Projekt, nicht
-  aus einem Modell. Nachvollziehbar, offline, in Millisekunden.
-- **Schreiben**: atomar, verifiziert, protokolliert in `.atlas/mutations.log`.
+If your documentation lives in Google Docs, `atlas` indexes it through the Docs
+API — including multiple document tabs.
+
+```bash
+atlas auth                     # one-time OAuth consent in the browser
+atlas sync --query MYPROJECT   # pull documents into the cache
+atlas status
+atlas publish --wo 7 --title "Mission 1" --desc "Rooms 1-9"
+```
+
+Three details that make the difference:
+
+- **Export to read, query directly to judge.** The search index is filled from
+  the Drive export; verification after a write goes through `documents.get`,
+  because the Docs API is consistent immediately after `batchUpdate` while the
+  Drive export lags 0.5–2 seconds. Verifying through the export builds you a
+  `verified: false` that isn't one.
+- **Writes are append-only with a revision lock.** `requiredRevisionId` prevents
+  a write from landing on a stale revision.
+- **Status changes are tab-scoped.** Google Docs has tabs; `replaceAllText`
+  without `tabsCriteria` also rewrites the same string in archive copies.
+
+Balancing values go through `atlas_sheet_update` with a `row_key` and a
+**column name**, never a cell coordinate. An agent that writes `C14` miscounts by
+one row and overwrites its neighbour.
 
 ---
 
-## Was es nicht ist
+## How it works
 
-- **Kein Dokumenteneditor.** Es schreibt Statuszeilen und Tabellenzellen, keine
-  Design-Prosa.
-- **Kein Crawler.** Es indiziert, was in den Doku-Ordnern liegt.
-- **Kein Ersatz für Tests.** Das Anbindungs-Gate prüft, ob eine Funktion
-  aufgerufen wird — nicht, ob sie das Richtige tut.
-- **Nicht für Windows-only gebaut**, aber dort entwickelt und getestet.
+- **Index**: SQLite with FTS5 (`external content`), BM25 ranking, prefix search.
+  Section anchors instead of file granularity: ~60-token hits instead of 2,000.
+- **German + English**: umlaut folding, stop words, compound splitting — but only
+  when both parts are in the vocabulary. Better no hit than a wrong one.
+- **No embeddings**: synonyms come from `.atlas/aliases.yml` in your project,
+  not from a model. Auditable, offline, milliseconds.
+- **Writes**: atomic, verified by reading back, logged to `.atlas/mutations.log`.
+
+Measured on a real project (5-tab doc, 124 sections, 218 GDScript files):
+
+| Task | Without atlas | With atlas |
+|---|---|---|
+| Locate 8 symbols | 291,447 tokens | 3,106 tokens |
+| One doc question | 20,364 tokens | 875 tokens |
+| Read one monolith file | 74,522 tokens | 388 tokens |
+
+---
+
+## What it is not
+
+- **Not a document editor.** It writes status lines and spreadsheet cells, not
+  design prose.
+- **Not a crawler.** It indexes what is in your documentation folders.
+- **Not a test replacement.** The wiring gate checks that a function is called —
+  not that it does the right thing.
+- **Not Windows-only**, but developed and tested there.
 
 ---
 
 ## Tests
 
 ```bash
-uv run pytest -q      # 187 Tests, keine Netzwerkzugriffe
-uv run python scripts/smoke_mcp.py --root examples/demo   # JSON-RPC-Smoke: 15 Tools
+uv run pytest -q      # 197 tests, no network access
+uv run python scripts/smoke_mcp.py --root examples/demo   # JSON-RPC smoke: 15 tools
 ```
 
-Die Tests laufen ohne Google-Zugang. Alles, was die Docs-API braucht, wird
-gefaked — inklusive der Fälle, in denen der Fake einen Write verschluckt, weil
-genau das in Produktion passiert ist.
+The tests run without Google access. Everything that touches the Docs API is
+faked — including the cases where the fake swallows a write, because that is
+exactly what happened in production.
 
-## Lizenz
+## License
 
-MIT — siehe [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE).

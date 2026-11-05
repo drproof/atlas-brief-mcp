@@ -570,13 +570,15 @@ def set_status(
         if current["status"] == status.lower():
             return {"changed": False, "wo": int(wo), "status": status,
                     "reason": "Status ist bereits gesetzt"}
-        old_mark = gdocs.STATUS_MARK.get(current["status"])
-        if old_mark is None:
+        marks = gdocs.MARKS_BY_STATUS.get(current["status"])
+        if not marks:
             raise gdocs.SyncError(
-                f"Work Order {wo} hat keinen erkennbaren Status ('{current['status']}') — "
-                "im Doc von Hand prüfen."
+                f"Work Order {wo} has no recognisable status ('{current['status']}') — "
+                "check the document by hand."
             )
-        old_marks = [old_mark]
+        # Beide Schreibweisen: bestehende Dokumente nutzen ERLEDIGT/OFFEN,
+        # neue DONE/OPEN.
+        old_marks = list(marks)
     else:
         # Der Index kann hinter dem Live-Dokument herhinken (`index_lag` nach
         # `publish`). Deshalb bei bekannten Google-Quellen erst im Live-Doc

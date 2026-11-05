@@ -28,18 +28,18 @@ def _project(tmp_path):
 def test_local_set_status_closes_the_loop(tmp_path):
     root, conn = _project(tmp_path)
     doc = root / "docs" / "ARCHITECTURE.md"
-    assert "⬜ OFFEN" in doc.read_text(encoding="utf-8")
+    assert "⬜ OPEN" in doc.read_text(encoding="utf-8")
 
     payload = publish_mod.set_status(root, conn, 1, "done")
 
     assert payload["verified"] is True
     assert payload["source"] == "local"
     # Die Statuszeile selbst prüfen, nicht das ganze Dokument: der
-    # Erklärtext darunter nennt "⬜ OFFEN" als Formatbeispiel.
+    # Erklärtext darunter nennt "⬜ OPEN" als Formatbeispiel.
     found = localwrite.find_line(root, 1)
     assert found is not None
-    assert "✅ ERLEDIGT" in found[2].group(0)
-    assert "⬜ OFFEN" not in found[2].group(0)
+    assert "✅ DONE" in found[2].group(0)
+    assert "⬜ OPEN" not in found[2].group(0)
 
 
 def test_local_set_status_survives_index_rebuild(tmp_path):
@@ -73,8 +73,8 @@ def test_local_set_status_keeps_the_title(tmp_path):
     publish_mod.set_status(root, conn, 1, "done")
 
     after = (root / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8")
-    assert "Architektur-Doku vervollständigen" in before
-    assert "Architektur-Doku vervollständigen" in after
+    assert "Complete the architecture doc" in before
+    assert "Complete the architecture doc" in after
 
 
 def test_local_publish_appends_a_new_work_order(tmp_path):
@@ -82,7 +82,7 @@ def test_local_publish_appends_a_new_work_order(tmp_path):
 
     payload = localwrite.publish(
         root, conn, 2,
-        "Work Order 2 — ⬜ OFFEN (Zweiter Schritt): Test-Eintrag",
+        "Work Order 2 — ⬜ OPEN (Zweiter Schritt): Test-Eintrag",
         "3. Work Orders",
     )
 
@@ -94,9 +94,9 @@ def test_local_publish_appends_a_new_work_order(tmp_path):
 
 def test_local_publish_refuses_duplicates(tmp_path):
     root, conn = _project(tmp_path)
-    localwrite.publish(root, conn, 2, "Work Order 2 — ⬜ OFFEN (A)", "3. Work Orders")
+    localwrite.publish(root, conn, 2, "Work Order 2 — ⬜ OPEN (A)", "3. Work Orders")
 
-    second = localwrite.publish(root, conn, 2, "Work Order 2 — ⬜ OFFEN (B)", "3. Work Orders")
+    second = localwrite.publish(root, conn, 2, "Work Order 2 — ⬜ OPEN (B)", "3. Work Orders")
 
     assert second["written"] is False
     assert "existiert bereits" in second["reason"]
@@ -120,3 +120,34 @@ def test_local_set_status_carries_changed_and_verify_gate(tmp_path):
     assert payload["changed"] is True
     assert payload["written"] is True
     assert "verify" in payload
+
+
+def test_legacy_german_marker_is_still_swappable(tmp_path):
+    """Bestehende Dokumente haben `⬜ OFFEN` — der Wechsel muss sie erkennen."""
+    root, conn = _project(tmp_path)
+    doc = root / "docs" / "ARCHITECTURE.md"
+    doc.write_text(
+        doc.read_text(encoding="utf-8").replace("⬜ OPEN", "⬜ OFFEN"),
+        encoding="utf-8",
+    )
+    indexer.index_file(conn, root, doc)
+    conn.commit()
+
+    payload = localwrite.set_status(root, conn, 1, "done")
+
+    assert payload["verified"] is True
+    line = localwrite.find_line(root, 1)[2].group(0)
+    assert "✅ DONE" in line
+    assert "OFFEN" not in line
+
+
+def test_legacy_marker_survives_status_back_and_forth(tmp_path):
+    """OFFEN -> DONE -> OPEN, ohne den Titel zu verlieren."""
+    root, conn = _project(tmp_path)
+
+    localwrite.set_status(root, conn, 1, "done")
+    localwrite.set_status(root, conn, 1, "open")
+
+    line = localwrite.find_line(root, 1)[2].group(0)
+    assert "⬜ OPEN" in line
+    assert "Complete the architecture doc" in line

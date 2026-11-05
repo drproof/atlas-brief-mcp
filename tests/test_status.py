@@ -14,8 +14,8 @@ def _conn(rows):
 def test_done_and_open_are_distinguished():
     conn = _conn([(
         "doc#plan", "Plan",
-        "* **Work Order 1 — ✅ ERLEDIGT (Core Unit, AP):** Text\n"
-        "* **Work Order 2 — ⬜ OFFEN (Dynamische Türen):** Text",
+        "* **Work Order 1 — ✅ DONE (Core Unit, AP):** Text\n"
+        "* **Work Order 2 — ⬜ OPEN (Dynamische Türen):** Text",
     )])
     items = extract_work_orders(conn)
     assert [item["wo"] for item in items] == [1, 2]
@@ -36,7 +36,7 @@ def test_split_sections_are_searched():
     """Lange Abschnitte liegen als part 1..n vor — Status kann in jedem Teil stehen."""
     conn = _conn([
         ("doc#a", "A", "Vorspann ohne Status"),
-        ("doc#b", "B", "* **Work Order 7 — ✅ ERLEDIGT (Späte Order):**"),
+        ("doc#b", "B", "* **Work Order 7 — ✅ DONE (Späte Order):**"),
     ])
     items = extract_work_orders(conn)
     assert [item["wo"] for item in items] == [7]

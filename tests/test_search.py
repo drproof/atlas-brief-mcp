@@ -69,7 +69,7 @@ def _log_project(tmp_path, heading: str, count: int):
     from atlas import indexer
 
     body = "\n".join(
-        f"Work Order {i} — ✅ ERLEDIGT (Eintrag {i} im Logbuch, Testfall)"
+        f"Work Order {i} — ✅ DONE (Eintrag {i} im Logbuch, Testfall)"
         for i in range(1, count + 1)
     )
     root = tmp_path / "proj"

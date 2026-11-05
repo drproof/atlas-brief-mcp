@@ -104,21 +104,21 @@ def build_parser() -> argparse.ArgumentParser:
     # dass der Subparser den global gesetzten Wert mit None überschreibt.
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--root", default=argparse.SUPPRESS,
-                        help="Projektwurzel (Default: GDD_ROOT oder Aufwärtssuche)")
+                        help="project root (default: ATLAS_ROOT or upward search)")
     common.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
-                        help="Roh-JSON ausgeben")
+                        help="emit raw JSON")
 
     parser = argparse.ArgumentParser(
         prog="atlas",
-        description="atlas: Projekt- und Design-Dokumentation durchsuchbar für Agenten und Terminal.",
+        description="atlas: project and design documentation, searchable for agents and terminals.",
         parents=[common],
     )
     sub = parser.add_subparsers(dest="command", required=True)
 
-    p = sub.add_parser("index", parents=[common], help="Index neu bauen")
-    p.add_argument("--force", action="store_true", help="Alle Dateien neu einlesen")
+    p = sub.add_parser("index", parents=[common], help="rebuild the index")
+    p.add_argument("--force", action="store_true", help="re-read all files")
 
-    p = sub.add_parser("where", parents=[common], help="Wo steht ein Thema? (kompakt)")
+    p = sub.add_parser("where", parents=[common], help="where is a topic? (compact)")
     p.add_argument("topic")
 
     p = sub.add_parser("search", parents=[common], help="Volltextsuche")
@@ -126,103 +126,103 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("-k", type=int, default=5)
     p.add_argument("--doc")
 
-    p = sub.add_parser("read", parents=[common], help="Abschnitt über Anker lesen")
+    p = sub.add_parser("read", parents=[common], help="read a section by anchor")
     p.add_argument("anchor")
     p.add_argument("--offset", type=int, default=0)
     p.add_argument("--max-chars", type=int, default=3000)
 
-    p = sub.add_parser("outline", parents=[common], help="Inhaltsverzeichnis")
+    p = sub.add_parser("outline", parents=[common], help="table of contents")
     p.add_argument("--doc")
 
-    p = sub.add_parser("tasks", parents=[common], help="Tasks aus Checkboxen")
+    p = sub.add_parser("tasks", parents=[common], help="tasks from checkboxes")
     p.add_argument("--status", default="open", choices=["open", "done", "all"])
     p.add_argument("--owner")
 
-    p = sub.add_parser("links", parents=[common], help="Beziehungen eines Abschnitts")
+    p = sub.add_parser("links", parents=[common], help="relations of a section")
     p.add_argument("anchor")
 
-    p = sub.add_parser("status", parents=[common], help="Fortschritt: Work-Order-Status")
-    sub.add_parser("lint", parents=[common], help="Struktur prüfen (Sanierungs-Liste)")
+    p = sub.add_parser("status", parents=[common], help="progress: work order status")
+    sub.add_parser("lint", parents=[common], help="check structure (cleanup list)")
 
-    p = sub.add_parser("brief", parents=[common], help="Delegations-Prompt aus dem GDD bauen")
+    p = sub.add_parser("brief", parents=[common], help="build a delegation prompt from the docs")
     p.add_argument("goal")
-    p.add_argument("--sections", type=int, default=5, help="Anzahl GDD-Abschnitte (Default 5)")
+    p.add_argument("--sections", type=int, default=5, help="number of sections (default 5)")
     p.add_argument("--max-chars", type=int, default=8000)
-    p.add_argument("--wo", type=int, help="Work-Order-Nummer für den Abschluss-Block")
+    p.add_argument("--wo", type=int, help="work order number for the closing block")
     p.add_argument("--file", dest="files", action="append", default=[], metavar="PFAD",
-                   help="Betroffene Code-Datei (mehrfach angebbar)")
-    p.add_argument("--no-rules", action="store_true", help="Leitplanken weglassen")
+                   help="affected code file (repeatable)")
+    p.add_argument("--no-rules", action="store_true", help="omit guardrails")
 
-    p = sub.add_parser("auth", parents=[common], help="Google-Freigabe (OAuth, öffnet Browser)")
-    p.add_argument("--client-secret", help="Pfad zur client_secret.json")
-    p.add_argument("--force", action="store_true", help="Vorhandenes Token verwerfen")
+    p = sub.add_parser("auth", parents=[common], help="Google consent (OAuth, opens the browser)")
+    p.add_argument("--client-secret", help="path to client_secret.json")
+    p.add_argument("--force", action="store_true", help="discard the existing token")
 
-    p = sub.add_parser("sync", parents=[common], help="Google Docs/Sheets als Markdown holen")
-    p.add_argument("--query", help="Name-Filter, z. B. 'GOREQUEST'")
-    p.add_argument("--force", action="store_true", help="Auch unveränderte Dokumente neu holen")
+    p = sub.add_parser("sync", parents=[common], help="fetch Google Docs/Sheets as Markdown")
+    p.add_argument("--query", help="name filter, e.g. 'MYPROJECT'")
+    p.add_argument("--force", action="store_true", help="also re-fetch unchanged documents")
 
     p = sub.add_parser("publish", parents=[common],
-                       help="Work-Order-Statuszeile ins Master-Doc schreiben")
+                       help="append a work order status line")
     p.add_argument("--wo", type=int, required=True, help="Work-Order-Nummer")
     p.add_argument("--status", default="done", choices=["done", "open"])
-    p.add_argument("--title", default="", help="Kurzer Titel in Klammern")
-    p.add_argument("--desc", default="", help="Ein Satz danach")
+    p.add_argument("--title", default="", help="short title in parentheses")
+    p.add_argument("--desc", default="", help="one sentence after it")
     p.add_argument("--section", default="Prototyp-Meilenstein-Plan",
-                   help="Überschrift des Zielabschnitts")
-    p.add_argument("--dry-run", action="store_true", help="Nur zeigen, was geschrieben würde")
+                   help="heading of the target section")
+    p.add_argument("--dry-run", action="store_true", help="show what would be written, write nothing")
     p.add_argument("--verify-symbols", default="",
-                   help="Kommagetrennte Symbole, die diese WO gebaut hat (Anbindungs-Gate)")
+                   help="comma-separated symbols this order built (wiring gate)")
 
-    p = sub.add_parser("set-status", parents=[common], help="Status einer Work Order ändern")
+    p = sub.add_parser("set-status", parents=[common], help="change the status of a work order")
     p.add_argument("--wo", type=int, required=True)
     p.add_argument("--status", required=True, choices=["done", "open"])
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--verify-symbols", default="")
 
     sub.add_parser("sheets", parents=[common],
-                   help="Bekannte Spreadsheets und ihre Tabs")
+                   help="known spreadsheets and their tabs")
 
     p = sub.add_parser("sheet-update", parents=[common],
-                       help="Zellen einer Zeile über Schlüssel + Spaltenname setzen")
-    p.add_argument("--tab", required=True, help="Blattname, z. B. 'Units'")
-    p.add_argument("--key", required=True, help="Wert der Schlüsselspalte, z. B. 'monster_goblin'")
+                       help="set cells of one row via key + column name")
+    p.add_argument("--tab", required=True, help="sheet name, e.g. 'Units'")
+    p.add_argument("--key", required=True, help="key column value, e.g. 'monster_goblin'")
     p.add_argument("--set", dest="updates", action="append", default=[], metavar="SPALTE=WERT",
-                   help="Mehrfach angebbar, z. B. --set HP=45 --set Status=✅")
-    p.add_argument("--sheet", help="Spreadsheet-Name oder ID (bei mehreren Quellen)")
-    p.add_argument("--key-column", help="Name der Schlüsselspalte (Default: erste Spalte)")
+                   help="repeatable, e.g. --set HP=45 --set Status=✅")
+    p.add_argument("--sheet", help="spreadsheet name or id (with several sources)")
+    p.add_argument("--key-column", help="key column name (default: first column)")
     p.add_argument("--raw", action="store_true",
-                   help="RAW statt USER_ENTERED (keine Formel-/Datums-Interpretation)")
+                   help="RAW instead of USER_ENTERED (no formula/date interpretation)")
     p.add_argument("--dry-run", action="store_true", help="Nur den Diff zeigen")
 
     p = sub.add_parser("sheet-append", parents=[common],
-                       help="Neue Zeile über Spaltennamen anhängen")
+                       help="append a new row via column names")
     p.add_argument("--tab", required=True)
     p.add_argument("--set", dest="values", action="append", default=[], metavar="SPALTE=WERT")
     p.add_argument("--sheet")
     p.add_argument("--dry-run", action="store_true")
 
-    sub.add_parser("doctor", parents=[common], help="Diagnose")
+    sub.add_parser("doctor", parents=[common], help="diagnostics")
 
     p = sub.add_parser("init", parents=[common],
-                       help="Projekt erfassen: Doku-Gerüst, Regeldateien, Index")
+                       help="bootstrap a repo: doc skeleton, rule files, index")
     p.add_argument("--out", default="docs/ARCHITECTURE.md",
-                   help="Zielpfad der generierten Architektur-Doku")
+                   help="target path of the generated architecture doc")
     p.add_argument("--force", action="store_true",
-                   help="Bestehende Doku überschreiben (Standard: nur ergänzen)")
+                   help="overwrite existing docs (default: only add)")
     p.add_argument("--dry-run", action="store_true",
-                   help="Nur zeigen, was entstehen würde — nichts schreiben")
+                   help="show what would be created — write nothing")
 
-    p = sub.add_parser("log", parents=[common], help="Schreibzugriffe anzeigen (Audit-Log)")
+    p = sub.add_parser("log", parents=[common], help="show write operations (audit log)")
     p.add_argument("--limit", type=int, default=20)
 
     p = sub.add_parser("code", parents=[common],
-                       help="Funktion/Klasse im Code finden (statt die Datei zu lesen)")
+                       help="find a function/class in code (instead of reading the file)")
     p.add_argument("symbol")
     p.add_argument("--limit", type=int, default=20)
     p.add_argument("--usage", action="store_true",
-                   help="Auch Aufrufstellen zeigen (Definition vs. Benutzung)")
+                   help="also show call sites (definition vs. usage)")
 
-    sub.add_parser("serve", parents=[common], help="MCP-Server über stdio starten")
+    sub.add_parser("serve", parents=[common], help="start the MCP server over stdio")
     return parser
 
 

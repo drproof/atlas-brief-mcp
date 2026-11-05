@@ -1,4 +1,4 @@
-"""MCP-Server (stdio) für den GDD-Index."""
+"""MCP server (stdio) exposing the project documentation index."""
 
 from __future__ import annotations
 
@@ -12,25 +12,25 @@ from .config import find_root
 from .indexer import ensure_fresh, open_index
 
 INSTRUCTIONS = (
-    "Dieser Server indiziert das Game Design Document des Projekts. "
-    "LESEN: Für JEDE Frage zum Game Design zuerst atlas_where oder atlas_search benutzen — "
-    "niemals das GDD-Markdown oder .atlas/cache direkt mit Read/Grep öffnen. Die Dateien "
-    "sind groß, der Index ist schneller und liefert nur den relevanten Abschnitt. "
-    "Ablauf: atlas_where('Thema') -> atlas_read(anchor) für den Volltext. "
-    "SCHREIBEN: atlas_set_status und atlas_publish erst nach grünen Tests aufrufen — "
-    "Abhaken ist der letzte Schritt, nie der erste. Design-Prosa, Formeln und "
-    "Balancing-Zahlen sind read-only; autonom erlaubt sind nur Status-Marker, "
-    "Implementierungs-Spalten und Dateipfade. "
-    "Balance-Werte NIEMALS als Zellkoordinate (C14) schreiben: atlas_sheet_update "
-    "nimmt row_key + Spaltenname und rechnet die Zelle selbst aus. "
-    # --- Direktheit: verhindert 15-Call-Ketten für eine Frage ---
-    "DIREKTHEIT: Ein passendes Tool beantwortet die Frage in EINEM Aufruf. "
-    "Work-Order-Status = atlas_status. Offene Tasks = atlas_tasks. Symbol/Datei = atlas_code_find. "
-    "Rufe NICHT zusätzlich `list tools`, die CLI, die MCP-Quelldateien oder den Index auf, "
-    "um ein Ergebnis zu bestätigen: Die Werkzeuge lesen dieselbe Quelle und lügen nicht. "
-    "Ein zweiter Call ist nur berechtigt, wenn der erste eine Fehlermeldung enthielt. "
-    "Status und Diagnose sind getrennt: atlas_status liefert die Work Orders, "
-    "`atlas doctor` (nur CLI, kein MCP-Tool) prüft die Index-Gesundheit."
+    "This server indexes the project's design and architecture documentation. "
+    "READING: For ANY documentation question use atlas_where or atlas_search first — "
+    "never open the Markdown sources or .atlas/cache with Read/Grep. Those files are "
+    "large; the index is faster and returns only the relevant section. "
+    "Flow: atlas_where('topic') -> atlas_read(anchor) for the full text. "
+    "WRITING: call atlas_set_status and atlas_publish only after tests are green — "
+    "marking something done is the last step, never the first. Design prose, formulas "
+    "and balancing numbers are read-only; autonomous writes are limited to status "
+    "markers, implementation columns and file paths. "
+    "NEVER write balancing values as a cell coordinate (C14): atlas_sheet_update takes "
+    "a row_key plus column name and computes the cell itself. "
+    # --- Directness: prevents 15-call chains for one question ---
+    "DIRECTNESS: one matching tool answers the question in ONE call. "
+    "Work order status = atlas_status. Open tasks = atlas_tasks. Symbol/file = atlas_code_find. "
+    "Do NOT additionally run `list tools`, the CLI, the MCP sources or the index to "
+    "confirm a result: the tools read the same source and do not lie. "
+    "A second call is justified only if the first returned an error message. "
+    "Status and diagnostics are separate: atlas_status returns the work orders, "
+    "`atlas doctor` (CLI only, not an MCP tool) checks index health."
 )
 
 mcp = FastMCP("atlas", instructions=INSTRUCTIONS)
@@ -40,7 +40,7 @@ _conn = None
 
 
 def configure(root: str | Path | None = None) -> None:
-    """Setzt die Projektwurzel (CLI nutzt das für --root)."""
+    """Set the project root (the CLI uses this for --root)."""
     global _root, _conn
     _root = find_root(str(root) if root else None)
     _conn = None
@@ -56,14 +56,13 @@ def _state():
 
 
 def _health(fn):
-    """Warnkopf bei verletzter Invariante (Token-Scopes, unbestätigter Write).
+    """Warning header when an invariant is violated (token scopes, unconfirmed write).
 
-    Ist alles in Ordnung, ist der Kopf leer und die Antwort bleibt unverändert —
-    der Preis für die Absicherung ist dann null Tokens.
+    When everything is fine the header is empty and the response is unchanged —
+    the safety net then costs zero tokens.
 
-    JSON-Antworten bleiben JSON: Die Warnung wird als Feld `_health` eingehängt,
-    nicht davorgesetzt. Ein Präfix vor `{…}` würde jeden Agenten brechen, der
-    die Antwort parst.
+    JSON responses stay JSON: the warning is attached as a `_health` field, not
+    prepended. A prefix before `{…}` would break any agent that parses the answer.
     """
     import functools
     import json
@@ -111,10 +110,11 @@ def _fresh():
 @mcp.tool()
 @_health
 def atlas_where(topic: str) -> str:
-    """Wo steht etwas im GDD? Liefert Datei, Zeile, Heading und Anker — ohne Volltext.
+    """Where is something in the docs? Returns file, line, heading and anchor — no full text.
 
-    ERSTE WAHL bei 'Wo finde ich X?', 'In welcher Datei steht Y?', 'Welcher Abschnitt
-    beschreibt Z?'. Antwort ist winzig (~60 Tokens). Danach bei Bedarf atlas_read(anchor).
+    FIRST CHOICE for 'where do I find X?', 'which file holds Y?', 'which section
+    describes Z?'. The answer is tiny (~60 tokens). Follow up with atlas_read(anchor)
+    if you need the text.
     """
     _, conn = _fresh()
     return search_mod.where(conn, topic)
@@ -123,15 +123,14 @@ def atlas_where(topic: str) -> str:
 @mcp.tool()
 @_health
 def atlas_search(query: str, k: int = 5, doc: str | None = None) -> str:
-    """Volltextsuche über alle GDD-Abschnitte, mit Snippets und Ranking (BM25).
+    """Full-text search across all sections, with snippets and BM25 ranking.
 
-    Lexikalisch über SQLite-FTS5 — **keine** Embeddings, keine Synonyme. Es werden
-    Wörter gebraucht, die im GDD stehen. Umlaute werden gefaltet ("Hoehe" findet
-    "Höhe"), deutsche Komposita teilweise ("Kampfsystem" findet "Kampf-System").
+    Lexical, via SQLite FTS5 — **no** embeddings, no synonyms. Use words that appear
+    in the documentation. Umlauts are folded ("Hoehe" finds "Höhe") and German
+    compounds are split partially ("Kampfsystem" finds "Kampf-System").
 
-    Für unscharfe Themen ('wie funktioniert Deckung?') oder wenn atlas_where nichts
-    findet. k = Anzahl Treffer (Default 5). doc = optional auf eine Dokument-ID
-    beschränken.
+    For fuzzy topics ('how does cover work?') or when atlas_where finds nothing.
+    k = number of hits (default 5). doc = optionally restrict to one document id.
     """
     _, conn = _fresh()
     return search_mod.search(conn, query, k=k, doc=doc)
@@ -140,10 +139,10 @@ def atlas_search(query: str, k: int = 5, doc: str | None = None) -> str:
 @mcp.tool()
 @_health
 def atlas_read(anchor: str, offset: int = 0, max_chars: int = 3000) -> str:
-    """Liest genau EINEN GDD-Abschnitt über seinen Anker (z. B. 'kampfsystem#schadensmodell').
+    """Read exactly ONE section by its anchor (e.g. 'combat-system#damage-model').
 
-    Nutze den Anker aus atlas_where/atlas_search/atlas_outline. Bei truncated=true mit
-    next_offset weiterlesen. Das ist der einzige Weg, GDD-Inhalt zu lesen.
+    Use the anchor from atlas_where/atlas_search/atlas_outline. If truncated=true,
+    continue with next_offset. This is the only way to read documentation content.
     """
     _, conn = _fresh()
     return search_mod.read(conn, anchor, offset=offset, max_chars=max_chars)
@@ -152,10 +151,10 @@ def atlas_read(anchor: str, offset: int = 0, max_chars: int = 3000) -> str:
 @mcp.tool()
 @_health
 def atlas_outline(doc: str | None = None) -> str:
-    """Inhaltsverzeichnis aller GDD-Dokumente (oder eines einzelnen via doc='id').
+    """Table of contents of all documents (or a single one via doc='id').
 
-    Nutze das, wenn du die Struktur noch nicht kennst oder ein Thema nirgends
-    gefunden wurde.
+    Use this when you don't know the structure yet, or when a topic was not found
+    anywhere.
     """
     _, conn = _fresh()
     return search_mod.outline(conn, doc=doc)
@@ -164,9 +163,9 @@ def atlas_outline(doc: str | None = None) -> str:
 @mcp.tool()
 @_health
 def atlas_tasks(status: str = "open", owner: str | None = None) -> str:
-    """Offene Design-/Entwicklungs-Tasks aus den Checkboxen des GDD.
+    """Open design/development tasks from the documentation's checkbox list.
 
-    status: 'open' | 'done' | 'all'. owner: optional '@name' filtern.
+    status: 'open' | 'done' | 'all'. owner: optionally filter by '@name'.
     """
     _, conn = _fresh()
     return search_mod.tasks(conn, status=status, owner=owner)
@@ -175,9 +174,9 @@ def atlas_tasks(status: str = "open", owner: str | None = None) -> str:
 @mcp.tool()
 @_health
 def atlas_links(anchor: str) -> str:
-    """Beziehungen eines Abschnitts: betroffene Code-Dateien (implements), Tags, Nachbarabschnitte.
+    """A section's relations: affected code files (implements), tags, sibling sections.
 
-    Für 'Was hängt damit zusammen?' oder 'Welcher Code setzt diesen Abschnitt um?'.
+    For 'what is connected to this?' or 'which code implements this section?'.
     """
     _, conn = _fresh()
     return search_mod.links(conn, anchor)
@@ -187,18 +186,18 @@ def atlas_links(anchor: str) -> str:
 @_health
 def atlas_brief(goal: str, max_sections: int = 5, work_order: int | None = None,
               files: list[str] | None = None) -> str:
-    """Baut einen fertigen Task-Brief für einen Subagenten: relevante GDD-Abschnitte,
-    betroffene Code-Dateien, die Projekt-Leitplanken und den Abschluss-Schritt.
+    """Build a ready-to-use task brief for a subagent: relevant sections,
+    affected code files, the project guardrails and the closing step.
 
-    Nutze das, wenn du eine Aufgabe delegieren willst, statt dem Subagenten die
-    GDD-Datei zu geben. Der Brief ist eigenständig lesbar und enthält stabile Anker.
+    Use this when delegating a task instead of handing the subagent your
+    documentation file. The brief is self-contained and contains stable anchors.
 
     Args:
-        goal: Die Aufgabe in einem Satz, z. B. 'Zwergen-Perk Gewölbestürmer anbinden'.
-        max_sections: Anzahl der GDD-Abschnitte (Default 5).
-        work_order: Optional die Work-Order-Nummer — dann enthält der Brief den
-            fertigen `atlas_publish`-Aufruf für den Abschluss.
-        files: Optional die betroffenen Code-Dateien, z. B. ['scripts/unit.gd'].
+        goal: The task in one sentence, e.g. 'wire the dwarf vault-charger perk'.
+        max_sections: number of sections to include (default 5).
+        work_order: optional work order number — the brief then contains the
+            ready-made `atlas_publish` call for closing it.
+        files: optional affected code files, e.g. ['scripts/unit.gd'].
     """
     root, conn = _fresh()
     from . import brief as brief_mod
@@ -211,21 +210,21 @@ def atlas_brief(goal: str, max_sections: int = 5, work_order: int | None = None,
 @_health
 def atlas_publish(wo: int, title: str, description: str = "", status: str = "done",
                 verify_symbols: list[str] | None = None) -> str:
-    """Trägt eine Work-Order-Statuszeile ins Master-Doc ein — append-only und verifiziert.
+    """Append a work-order status line — append-only and verified.
 
-    Nutze das als LETZTEN Schritt nach einem Task, statt selbst ins Google Doc zu
-    schreiben. Das Tool hängt die Zeile an den Abschnitt 'Prototyp-Meilenstein-Plan',
-    prüft die Zeile direkt über die Docs API und meldet nur Erfolg
-    (`verified: true`), wenn sie wirklich im Dokument steht.
+    Use this as the LAST step after a task instead of writing into the document
+    yourself. The tool appends the line to the work-order section, then reads the
+    document back through the Docs API and only reports success (`verified: true`)
+    if the line is really there. In local projects (no Google Doc bound) it writes
+    into the managed Markdown file with the same verification.
 
-    status: 'done' (✅ ERLEDIGT) oder 'open' (⬜ OFFEN).
+    status: 'done' (✅ DONE) or 'open' (⬜ OPEN).
 
-    verify_symbols: Die Symbole, die diese Work Order gebaut hat. Bei 'done' wird
-    VOR dem Schreiben geprüft, ob sie definiert UND benutzt sind. Ein definiertes,
-    aber nirgends aufgerufenes Symbol lässt das Schreiben scheitern
-    (`written: false, refused: true`) — genau der Fall, an dem WO 8 gescheitert ist.
-    Für erledigte Orders zusätzlich in `.atlas/wo-symbols.yml` hinterlegen, damit
-    spätere Regressionen auffallen.
+    verify_symbols: the symbols this work order built. With 'done', the tool checks
+    BEFORE writing whether they are defined AND used. A symbol that is defined but
+    never called makes the write fail (`written: false, refused: true`) — exactly
+    the failure mode that killed WO 8. Also record them in `.atlas/wo-symbols.yml`
+    so later regressions are caught by `atlas doctor`.
     """
     from . import gdocs, publish as publish_mod
 
@@ -244,15 +243,15 @@ def atlas_publish(wo: int, title: str, description: str = "", status: str = "don
 @_health
 def atlas_set_status(wo: int, status: str = "done",
                    verify_symbols: list[str] | None = None) -> str:
-    """Ändert den Status einer BEREITS dokumentierten Work Order (✅ ⇄ ⬜).
+    """Change the status of an ALREADY documented work order (✅ <-> ⬜).
 
-    Für offene Orders, die fertig werden: `atlas_set_status(8, "done")`.
-    Nutzt replaceAllText auf dem eindeutigen Status-String — kein Index-Gefrickel.
-    Zum NEUEN Eintragen einer Order `atlas_publish` verwenden, nicht dieses Tool.
+    For open orders that just finished: `atlas_set_status(8, "done")`.
+    Uses replaceAllText on the unique status string — no index arithmetic.
+    To add a NEW order use `atlas_publish`, not this tool.
 
-    Bei 'done' gilt derselbe Anbindungs-Nachweis wie bei `atlas_publish`: Symbole aus
-    verify_symbols und aus `.atlas/wo-symbols.yml` müssen definiert und benutzt sein,
-    sonst wird der Status nicht gesetzt.
+    With 'done' the same wiring check applies as in `atlas_publish`: symbols from
+    verify_symbols and from `.atlas/wo-symbols.yml` must be defined and used, or the
+    status is not set.
     """
     from . import gdocs, publish as publish_mod
 
@@ -275,22 +274,22 @@ def atlas_sheet_update(
     key_column: str | None = None,
     dry_run: bool = False,
 ) -> str:
-    """Ändert einzelne Zellen einer Tabellenzeile — über Schlüssel + Spaltenname.
+    """Change individual cells of one row — via key plus column name.
 
-    NIE Zellkoordinaten wie 'C14' verwenden. Der Zeilen-Schlüssel ist der Wert der
-    ersten Spalte (z. B. 'monster_goblin'), die Spalten heißen wie im Header
-    (z. B. {"HP": 45, "Status": "✅"}).
+    NEVER use cell coordinates like 'C14'. The row key is the value of the first
+    column (e.g. 'monster_goblin'); columns are named as in the header
+    (e.g. {"HP": 45, "Status": "✅"}).
 
     Args:
-        tab: Blattname exakt wie im Spreadsheet (z. B. 'Units').
-        row_key: Wert der Schlüsselspalte, der die Zeile eindeutig identifiziert.
-        updates: {Spaltenname: neuer Wert} — nur die zu ändernden Spalten.
-        sheet: Spreadsheet-Name oder ID, nur nötig wenn mehrere Quellen bekannt sind.
-        key_column: Name der Schlüsselspalte, falls nicht die erste Spalte.
-        dry_run: true = nur den Diff zeigen, nichts schreiben.
+        tab: sheet name exactly as in the spreadsheet (e.g. 'Units').
+        row_key: value of the key column that identifies the row.
+        updates: {column name: new value} — only the columns to change.
+        sheet: spreadsheet name or id, only needed when several sources exist.
+        key_column: name of the key column if it is not the first one.
+        dry_run: true = show the diff only, write nothing.
 
-    Bei einem falschen Spaltennamen kommt die Liste der erlaubten Header zurück —
-    danach den Call korrigieren. Nach Erfolg ist der Index sofort aktualisiert.
+    A wrong column name returns the list of allowed headers — fix the call and
+    retry. After success the search index is updated immediately.
     """
     from . import gdocs, sheets as sheets_mod
 
@@ -321,16 +320,16 @@ def atlas_sheet_update(
 @_health
 def atlas_sheet_append(tab: str, values: dict, sheet: str | None = None,
                      dry_run: bool = False) -> str:
-    """Hängt eine neue Zeile an ein Blatt an — Spalten über den Header, nicht über Positionen.
+    """Append a new row to a sheet — columns by header, not by position.
 
-    Beispiel: tab='Units', values={"ID": "monster_goblin", "Name": "Goblin",
-    "HP": 100, "Armor": 2}. Fehlende Spalten bleiben leer.
+    Example: tab='Units', values={"ID": "monster_goblin", "Name": "Goblin",
+    "HP": 100, "Armor": 2}. Missing columns stay empty.
 
     Args:
-        tab: Blattname exakt wie im Spreadsheet.
-        values: {Spaltenname: Wert} der neuen Zeile.
-        sheet: Spreadsheet-Name oder ID, nur bei mehreren Quellen nötig.
-        dry_run: true = nur zeigen, was angehängt würde.
+        tab: sheet name exactly as in the spreadsheet.
+        values: {column name: value} for the new row.
+        sheet: spreadsheet name or id, only needed with several sources.
+        dry_run: true = show what would be appended.
     """
     from . import gdocs, sheets as sheets_mod
 
@@ -355,10 +354,10 @@ def atlas_sheet_append(tab: str, values: dict, sheet: str | None = None,
 @mcp.tool()
 @_health
 def atlas_sheets() -> str:
-    """Listet die bekannten Spreadsheets und ihre Tab-Namen.
+    """List the known spreadsheets and their tab names.
 
-    Nutze das, bevor du atlas_sheet_update/atlas_sheet_append aufrufst und den exakten
-    Blattnamen nicht kennst. Liefert nur Namen, keine Zellinhalte.
+    Use this before calling atlas_sheet_update/atlas_sheet_append if you don't know
+    the exact sheet name. Returns names only, no cell contents.
     """
     from . import gdocs, sheets as sheets_mod
 
@@ -387,21 +386,23 @@ def atlas_sheets() -> str:
 @mcp.tool()
 @_health
 def atlas_code_find(symbol: str, limit: int = 10, usage: bool = False) -> str:
-    """Findet die Definition einer Funktion oder Klasse im Code — Datei, Zeile, Signatur.
+    """Find the definition of a function or class in code — file, line, signature.
 
-    Nutze das, BEVOR du eine `.gd`-Datei liest: `turn_manager.gd` hat 424.944
-    Zeichen (~125.000 Tokens), eine Signatur kostet ~30. Für 'wo ist X definiert
-    und wie ist die Signatur?' ist das der billige Weg.
+    Use this BEFORE reading a source file: a 9,000-line manager module is
+    ~125,000 tokens, one signature costs ~30. For 'where is X defined and what is
+    its signature?' this is the cheap path.
+
+    Supports GDScript, Python, TypeScript/JavaScript, Rust, C#, Go, Java, Kotlin
+    and Swift — the same patterns `atlas init` uses.
 
     Args:
-        symbol: Funktions- oder Klassenname (Teilstring genügt).
-        limit: Maximale Treffer (Default 10).
-        usage: true = zusätzlich die Aufrufstellen zeigen. Damit erkennst du, ob
-            eine Funktion überhaupt benutzt wird — eine Implementierung ohne
-            Aufrufer ist toter Code, auch wenn sie vollständig aussieht.
+        symbol: function or class name (a substring is enough).
+        limit: maximum hits (default 10).
+        usage: true = also show the call sites. That tells you whether a function
+            is used at all — an implementation without a caller is dead code, even
+            if it looks complete.
 
-    Gesucht wird in `func`- und `class_name`-Definitionen. Variablen und Signale
-    findest du damit nicht — dafür gezielt `grep -n` nutzen.
+    Variables and signals are NOT found this way — use `grep -n` for those.
     """
     root, _ = _fresh()
     from . import code as code_mod
@@ -412,11 +413,11 @@ def atlas_code_find(symbol: str, limit: int = 10, usage: bool = False) -> str:
 @mcp.tool()
 @_health
 def atlas_lint() -> str:
-    """Prüft die GDD-Struktur und liefert die Liste der Formfehler, die den Index
-    schwer lesbar machen (leere Überschriften, Abschnitte ohne Inhalt, zu lange
-    Abschnitte, Work Orders ohne Status-Marker, Navigationszeilen).
+    """Check documentation structure and return the formatting problems that make
+    the index hard to read (empty headings, sections without content, overly long
+    sections, work orders without a status marker, navigation lines).
 
-    Nutze das, bevor du das GDD umstrukturierst — oder nach einem Agenten-Lauf.
+    Use this before restructuring the docs — or after an agent run.
     """
     from . import bootstrap, lint as lint_mod
 
@@ -429,12 +430,12 @@ def atlas_lint() -> str:
 @mcp.tool()
 @_health
 def atlas_status() -> str:
-    """Fortschritt des Projekts: welche Work Orders sind erledigt, welche offen.
+    """Project progress: which work orders are done, which are open.
 
-    Nutze das, wenn du den aktuellen Stand brauchst — statt die GDD-Doku zu lesen.
-    Liefert Nummer, Status und Titel als fertige Liste, plus eine Zeile, wie alt
-    der Stand ist. Diese Antwort ist die Quelle: kein zweiter Aufruf, keine CLI,
-    kein Blick in den Quellcode nötig.
+    Use this when you need the current state instead of reading the documentation.
+    Returns number, status and title as a ready-made list, plus one line saying how
+    old the state is. This answer is the source: no second call, no CLI, no look at
+    the source code needed.
     """
     import json as _json
 
@@ -455,14 +456,14 @@ def atlas_status() -> str:
 
 @mcp.resource("atlas://outline")
 def resource_outline() -> str:
-    """Komplette GDD-Struktur als Text."""
+    """Full document structure as text."""
     _, conn = _fresh()
     return search_mod.outline(conn, max_chars=8000)
 
 
 @mcp.resource("atlas://section/{anchor}")
 def resource_section(anchor: str) -> str:
-    """Ein einzelner Abschnitt als Text."""
+    """A single section as text."""
     _, conn = _fresh()
     return search_mod.read(conn, anchor, max_chars=8000)
 

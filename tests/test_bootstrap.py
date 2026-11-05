@@ -56,7 +56,7 @@ def test_init_creates_lint_clean_document_and_work_order(tmp_path):
 
     assert "docs/ARCHITECTURE.md" in report["created"]
     document = (root / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8")
-    assert "Work Order 1 — ⬜ OFFEN" in document
+    assert "Work Order 1 — ⬜ OPEN" in document
     assert "orphan_function" in document          # Risiko-Abschnitt
     assert "core/engine.gd" in document           # Dateipfad für atlas_links
 
@@ -286,7 +286,7 @@ def test_subproject_is_marked_in_document(tmp_path):
 
     assert scan["domains"]["games"]["subproject"] == "dungeon/project.godot"
     document = bootstrap.generate_architecture_skeleton(scan)
-    assert "Sub-Projekt" in document
+    assert "sub-project" in document
     assert "dungeon/project.godot" in document
 
 

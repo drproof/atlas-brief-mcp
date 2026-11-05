@@ -3,11 +3,11 @@ from atlas.publish import _insert_request, find_insert_index, format_line
 
 def test_format_done_with_title_and_description():
     line = format_line(7, "done", "Mission 1 E2E", "Räume 1–9 implementiert.")
-    assert line == "Work Order 7 — ✅ ERLEDIGT (Mission 1 E2E): Räume 1–9 implementiert."
+    assert line == "Work Order 7 — ✅ DONE (Mission 1 E2E): Räume 1–9 implementiert."
 
 
 def test_format_open_without_description():
-    assert format_line(8, "open", "Kamera") == "Work Order 8 — ⬜ OFFEN (Kamera):"
+    assert format_line(8, "open", "Kamera") == "Work Order 8 — ⬜ OPEN (Kamera):"
 
 
 def test_format_rejects_unknown_status():
@@ -95,12 +95,12 @@ class FakeDocs:
         self.flat = flat
         # Flaches Dokument ohne Tabs: der Text muss sich beim Write ändern,
         # sonst simuliert der Fake eine API, die Writes verschluckt.
-        self.flat_text = "Work Order 9 — ✅ ERLEDIGT (flach)\n"
+        self.flat_text = "Work Order 9 — ✅ DONE (flach)\n"
         self.tabs = [
             {"id": "t.1", "title": "Tab 5 Kampagne",
-             "text": "Work Order 9 — ✅ ERLEDIGT (Headless-Tests)\n"},
+             "text": "Work Order 9 — ✅ DONE (Headless-Tests)\n"},
             {"id": "t.2", "title": "Archiv",
-             "text": "Work Order 9 — ✅ ERLEDIGT (alte Fassung)\n"},
+             "text": "Work Order 9 — ✅ DONE (alte Fassung)\n"},
         ]
         self.calls: list[list[str]] = []
 
@@ -176,8 +176,8 @@ def test_set_status_locks_replacement_to_one_tab(monkeypatch, wired, tmp_path):
     assert result["tab"] == "Tab 5 Kampagne"
     assert result["verified"] is True
     # nur der Ziel-Tab wurde angefasst, das Archiv blieb unberührt
-    assert "⬜ OFFEN" in wired.tabs[0]["text"]
-    assert "✅ ERLEDIGT" in wired.tabs[1]["text"]
+    assert "⬜ OPEN" in wired.tabs[0]["text"]
+    assert "✅ DONE" in wired.tabs[1]["text"]
     assert wired.calls == [["t.1"]]
 
 
@@ -205,9 +205,9 @@ def test_set_status_falls_back_without_tab_lock(monkeypatch, tmp_path):
 
 
 def test_set_status_swaps_whole_marker_pair():
-    """'✅ ERLEDIGT' -> '⬜ OFFEN': der Text muss mitwechseln, nicht nur das Emoji."""
-    assert publish.format_line(9, "open", "", "") == "Work Order 9 — ⬜ OFFEN:"
-    assert publish.format_line(9, "done", "", "") == "Work Order 9 — ✅ ERLEDIGT:"
+    """'✅ DONE' -> '⬜ OPEN': der Text muss mitwechseln, nicht nur das Emoji."""
+    assert publish.format_line(9, "open", "", "") == "Work Order 9 — ⬜ OPEN:"
+    assert publish.format_line(9, "done", "", "") == "Work Order 9 — ✅ DONE:"
 
 
 def test_newline_prefix_starts_a_new_paragraph():
@@ -219,7 +219,7 @@ def test_newline_prefix_starts_a_new_paragraph():
     """
     text = "Text des Abschnitts\nNächster Abschnitt\n"
     index = len("Text des Abschnitts")  # Position des Umbruchs
-    line = "Work Order 7 — ✅ ERLEDIGT (Test)"
+    line = "Work Order 7 — ✅ DONE (Test)"
 
     fixed = text[:index] + "\n" + line + text[index:]
     assert fixed.splitlines() == ["Text des Abschnitts", line, "Nächster Abschnitt"]
@@ -230,7 +230,7 @@ def test_newline_prefix_starts_a_new_paragraph():
 
 def test_insert_request_has_leading_newline():
     """Der Request selbst: führender Umbruch, Tab-Sperre, kein Ankleben."""
-    body = _insert_request(14237, "Work Order 7 — ✅ ERLEDIGT (Test)")
+    body = _insert_request(14237, "Work Order 7 — ✅ DONE (Test)")
 
     request = body["requests"][0]["insertText"]
     assert request["text"].startswith("\n"), "ohne führenden Umbruch klebt die Zeile"
@@ -240,7 +240,7 @@ def test_insert_request_has_leading_newline():
 
 def test_insert_request_carries_tab_id():
     """Bei einem Tab-Dokument muss die Location den Tab nennen."""
-    body = _insert_request(500, "Work Order 8 — ⬜ OFFEN (Test)", tab_id="t.5zmrz")
+    body = _insert_request(500, "Work Order 8 — ⬜ OPEN (Test)", tab_id="t.5zmrz")
 
     assert body["requests"][0]["insertText"]["location"]["tabId"] == "t.5zmrz"
 
@@ -248,7 +248,7 @@ def test_insert_request_carries_tab_id():
 def test_publish_live_doc_guard_switches_status_when_index_lags(monkeypatch, tmp_path):
     """Index kennt WO 9 noch nicht (`extract_work_orders == []`), aber das Live-Doc hat sie."""
     fake = FakeDocs()
-    fake.tabs[0]["text"] = "Work Order 9 — ⬜ OFFEN (Headless-Tests)\n"
+    fake.tabs[0]["text"] = "Work Order 9 — ⬜ OPEN (Headless-Tests)\n"
     monkeypatch.setattr(gdocs, "build_services", lambda creds: (None, None, fake))
     monkeypatch.setattr(gdocs, "known_sources", lambda conn: [
         {"id": "doc-1", "name": "Master GDD", "mimeType": gdocs.DOC_MIME}
@@ -267,4 +267,4 @@ def test_publish_live_doc_guard_switches_status_when_index_lags(monkeypatch, tmp
     assert result["changed"] is True
     assert result["reused_set_status"] is True
     assert result["verified"] is True
-    assert "✅ ERLEDIGT" in fake.tabs[0]["text"]
+    assert "✅ DONE" in fake.tabs[0]["text"]

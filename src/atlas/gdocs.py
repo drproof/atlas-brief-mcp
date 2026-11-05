@@ -47,7 +47,14 @@ CLIENT_SECRET_PATH = global_dir() / "client_secret.json"
 DOC_MIME = "application/vnd.google-apps.document"
 SHEET_MIME = "application/vnd.google-apps.spreadsheet"
 
-STATUS_MARK = {"done": "✅ ERLEDIGT", "open": "⬜ OFFEN"}
+# Das Datenformat der Statuszeilen. Englisch, weil die Dokumente oeffentlich
+# lesbar sind — aber die deutschen Varianten bleiben lesbar, damit bestehende
+# Dokumente weiter funktionieren.
+STATUS_MARK = {"done": "✅ DONE", "open": "⬜ OPEN"}
+MARKS_BY_STATUS = {
+    "done": ("✅ DONE", "✅ ERLEDIGT", "☑ ERLEDIGT", "☑ DONE"),
+    "open": ("⬜ OPEN", "⬜ OFFEN", "☐ OFFEN", "☐ OPEN"),
+}
 
 
 class SyncError(RuntimeError):

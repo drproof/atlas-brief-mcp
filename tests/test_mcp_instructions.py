@@ -23,9 +23,10 @@ def test_forbids_direct_cache_reads():
 
 
 def test_checkoff_only_after_green_tests():
+    """The instruction that matters most: done is the last step, not the first."""
     text = _instructions().lower()
-    assert "grünen tests" in text
-    assert "letzte" in text  # "Abhaken ist der letzte Schritt, nie der erste"
+    assert "after tests are green" in text
+    assert "last step" in text
 
 
 def test_spec_is_declared_read_only():

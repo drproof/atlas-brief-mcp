@@ -15,11 +15,14 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-STATUS_MARK = {"done": "✅ ERLEDIGT", "open": "⬜ OFFEN"}
+STATUS_MARK = {"done": "✅ DONE", "open": "⬜ OPEN"}
 SEPARATORS = ("—", "–", "-", ":")
-# Alte Marker, die beim Statuswechsel ersetzt werden.
-_OLD_MARK_RE = re.compile(r"^(?:✅\s*ERLEDIGT|⬜\s*OFFEN|☑\s*ERLEDIGT|☐\s*OFFEN)\s*",
-                          re.IGNORECASE)
+# Beide Schreibweisen: deutsch (bestehende Dokumente) und englisch (neu).
+_OLD_MARK_RE = re.compile(
+    r"^(?:✅\s*(?:ERLEDIGT|DONE)|⬜\s*(?:OFFEN|OPEN)|☑\s*(?:ERLEDIGT|DONE)"
+    r"|☐\s*(?:OFFEN|OPEN))\s*",
+    re.IGNORECASE,
+)
 
 
 def _line_re(wo: int) -> re.Pattern:

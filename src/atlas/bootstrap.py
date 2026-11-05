@@ -106,6 +106,15 @@ def _find_unwired(sources: list[tuple[str, str, int]]) -> list[dict]:
 
     Ein Durchlauf über den Gesamttext pro Symbol: `str.count` läuft in C, damit
     bleibt der Scan auch bei hundert Dateien unter einer Sekunde.
+
+    Zwei Anbindungsarten, die kein Aufruf sind und trotzdem zählen:
+
+    - **Test-Konvention**: `test_foo` wird von pytest über den Namen gefunden,
+      nie aufgerufen. 15 von 20 Treffern in einem echten Python-Projekt waren
+      solche Funktionen — eine Warnliste, die zu 75 % falsch ist, liest niemand.
+    - **Dekorator-Registrierung**: `@mcp.tool()`, `@app.route(...)`,
+      `@pytest.fixture` hängen die Funktion an ein Framework. Sie steht dann
+      nirgends als Aufruf im Code.
     """
     haystack = "\n".join(text for _rel, text, _t in sources)
     findings: list[dict] = []
@@ -117,7 +126,13 @@ def _find_unwired(sources: list[tuple[str, str, int]]) -> list[dict]:
             name = match.group("name")
             if name in seen or len(name) < 4:
                 continue
+            # Test-Konventionen (pytest, unittest, JS-Test-Runner)
+            if name.startswith("test_") or name.startswith("Test") or name.endswith("_test"):
+                continue
             start = text.count("\n", 0, match.start())
+            # Dekorator direkt über der Definition = an ein Framework gebunden.
+            if start > 0 and lines[start - 1].lstrip().startswith("@"):
+                continue
             end = start
             for offset in range(start + 1, len(lines)):
                 line = lines[offset]
@@ -215,6 +230,13 @@ def generate_architecture_skeleton(scan: dict, project: str = "") -> str:
                      "außerhalb ihrer Definition nirgends erwähnt. Entweder "
                      "toter Code, oder es fehlt der Aufrufer — vor dem Löschen "
                      "prüfen, ob eine Work Order sie gebaut hat.")
+        lines.append("")
+        lines.append("**Das ist ein Hinweis, kein Urteil.** Gesehen wird nur "
+                     "dieses Repository: Ein Aufrufer in einem anderen Repo, in "
+                     "einem Framework (Dekorator, Signal, Reflection) oder in "
+                     "einer Teilkopie bleibt unsichtbar. Bei ausgelagerten "
+                     "Modulen ist die Liste unzuverlässig — erst prüfen, dann "
+                     "löschen.")
         lines.append("")
         for item in scan["unwired"]:
             lines.append(f"- `{item['symbol']}` in `{item['path']}:{item['line']}` "
@@ -315,8 +337,12 @@ def _ensure_gitignore(root: Path) -> bool:
 
 
 def init_project(root, out: str | Path = "docs/ARCHITECTURE.md",
-                 force: bool = False) -> dict:
-    """Scan, Doku-Gerüst, Regeldateien, Index. Liefert einen Bericht."""
+                 force: bool = False, dry_run: bool = False) -> dict:
+    """Scan, Doku-Gerüst, Regeldateien, Index. Liefert einen Bericht.
+
+    `dry_run` zeigt, was entstehen würde, und schreibt nichts — der einzige
+    Weg, das Tool gefahrlos an einem fremden Repository auszuprobieren.
+    """
     root = Path(root).resolve()
     out_path = Path(out)
     if not out_path.is_absolute():
@@ -325,9 +351,12 @@ def init_project(root, out: str | Path = "docs/ARCHITECTURE.md",
     scan = scan_repository(root)
     created: list[str] = []
     kept: list[str] = []
+    would_create: list[str] = []
 
     if out_path.exists() and not force:
         kept.append(out_path.relative_to(root).as_posix())
+    elif dry_run:
+        would_create.append(out_path.relative_to(root).as_posix())
     else:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(
@@ -341,22 +370,41 @@ def init_project(root, out: str | Path = "docs/ARCHITECTURE.md",
         (".mcp.json", MCP_TEMPLATE),
     ):
         path = root / name
-        if _write_if_absent(path, content):
-            created.append(name)
-        else:
+        if path.exists():
             kept.append(name)
+        elif dry_run:
+            would_create.append(name)
+        else:
+            _write_if_absent(path, content)
+            created.append(name)
 
-    if _ensure_gitignore(root):
-        created.append(".gitignore (ergänzt)")
+    gitignore_missing = [
+        line for line in GITIGNORE_LINES
+        if line not in (
+            (root / ".gitignore").read_text(encoding="utf-8").splitlines()
+            if (root / ".gitignore").exists() else []
+        )
+    ]
+    if gitignore_missing:
+        if dry_run:
+            would_create.append(f".gitignore (+{len(gitignore_missing)})")
+        else:
+            _ensure_gitignore(root)
+            created.append(".gitignore (ergänzt)")
 
-    return {
+    report = {
         "root": str(root),
+        "dry_run": dry_run,
         "files_scanned": scan["files"],
         "tokens": scan["tokens"],
         "domains": len(scan["domains"]),
+        "domain_names": list(scan["domains"].keys())[:12],
         "hotspots": len(scan["hotspots"]),
         "unwired": len(scan["unwired"]),
         "document": str(out_path),
         "created": created,
         "kept": kept,
     }
+    if dry_run:
+        report["would_create"] = would_create
+    return report

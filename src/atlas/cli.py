@@ -209,6 +209,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="Zielpfad der generierten Architektur-Doku")
     p.add_argument("--force", action="store_true",
                    help="Bestehende Doku überschreiben (Standard: nur ergänzen)")
+    p.add_argument("--dry-run", action="store_true",
+                   help="Nur zeigen, was entstehen würde — nichts schreiben")
 
     p = sub.add_parser("log", parents=[common], help="Schreibzugriffe anzeigen (Audit-Log)")
     p.add_argument("--limit", type=int, default=20)
@@ -427,7 +429,13 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "init":
         from . import bootstrap, lint as lint_mod
 
-        report = bootstrap.init_project(root, out=args.out, force=args.force)
+        report = bootstrap.init_project(root, out=args.out, force=args.force,
+                                        dry_run=args.dry_run)
+        if args.dry_run:
+            # Nichts geschrieben, also nichts zu indizieren oder zu linten.
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+            return 0
+
         indexed = refresh(conn, root, force=True)
         lint_result = json.loads(lint_mod.lint(conn))
         report["indexed"] = indexed.get("sections", indexed)

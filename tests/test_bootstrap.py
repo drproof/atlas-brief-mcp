@@ -154,3 +154,51 @@ def test_find_root_ignores_global_config_dir(tmp_path, monkeypatch):
     monkeypatch.chdir(project)
 
     assert config.find_root() == project.resolve()
+
+
+def test_dry_run_writes_nothing(tmp_path):
+    root = _dummy_repo(tmp_path)
+    report = bootstrap.init_project(root, dry_run=True)
+
+    assert report["dry_run"] is True
+    assert report["created"] == []
+    assert "docs/ARCHITECTURE.md" in report["would_create"]
+    assert "AGENTS.md" in report["would_create"]
+    assert not (root / "docs").exists()
+    assert not (root / "AGENTS.md").exists()
+
+
+def test_unwired_ignores_test_functions(tmp_path):
+    """pytest ruft `test_*` per Namenskonvention — kein fehlender Aufrufer."""
+    root = tmp_path / "proj"
+    root.mkdir()
+    (root / "tests").mkdir()
+    body = "".join(f"    line_{i} = {i}\n" for i in range(16))
+    (root / "tests" / "test_feature.py").write_text(
+        f"def test_something():\n{body}    return True\n", encoding="utf-8")
+    (root / "tests" / "conftest.py").write_text(
+        f"def fixture_like_setup():\n{body}    return True\n", encoding="utf-8")
+
+    scan = bootstrap.scan_repository(root)
+
+    symbols = {item["symbol"] for item in scan["unwired"]}
+    assert "test_something" not in symbols
+    assert "fixture_like_setup" in symbols
+
+
+def test_unwired_ignores_decorated_functions(tmp_path):
+    """`@mcp.tool()` bindet eine Funktion an ein Framework, ohne Aufruf."""
+    root = tmp_path / "proj"
+    root.mkdir()
+    body = "".join(f"    line_{i} = {i}\n" for i in range(16))
+    (root / "server.py").write_text(
+        "mcp = object()\n\n"
+        f"@mcp.tool()\ndef registered_tool():\n{body}    return True\n\n"
+        f"def plain_function():\n{body}    return True\n",
+        encoding="utf-8",
+    )
+
+    symbols = {item["symbol"] for item in bootstrap.scan_repository(root)["unwired"]}
+
+    assert "registered_tool" not in symbols
+    assert "plain_function" in symbols

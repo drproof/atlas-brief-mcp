@@ -78,7 +78,10 @@ def render(root, limit: int = 20) -> str:
         verdict = "ok" if entry.get("verified") else "NICHT VERIFIZIERT"
         target = (
             entry.get("sheet")
+            # `publish` schreibt `document`, nicht `document_name` — sonst
+            # zeigt `atlas log` bei Work-Order-Writes nie den Dokumentnamen.
             or entry.get("document_name")
+            or entry.get("document")
             or ""
         )
         detail = entry.get("wo") or entry.get("row") or ""

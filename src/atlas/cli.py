@@ -418,8 +418,12 @@ def main(argv: list[str] | None = None) -> int:
 
     conn = open_index(root)
 
-    # Vor Status/Brief/Lint den Google-Stand nachziehen (5-Minuten-Cache).
-    if args.command in ("status", "brief", "lint"):
+    # Vor jedem lesenden Befehl den Google-Stand nachziehen (5-Minuten-Cache).
+    # `where`/`search`/`read`/`outline`/`links` fehlten hier — eine Änderung im
+    # Doc war dort erst nach einem expliziten `atlas sync` sichtbar, obwohl das
+    # MCP-Pendant (`_fresh`) es immer tut.
+    if args.command in ("status", "brief", "lint", "where", "search", "read",
+                        "outline", "links", "tasks", "publish", "set-status"):
         from . import gdocs
 
         gdocs.auto_sync(root, conn)

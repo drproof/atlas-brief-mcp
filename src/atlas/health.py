@@ -64,6 +64,36 @@ def _recent(root, limit: int = 20) -> list[dict]:
     return entries
 
 
+def _entry_key(entry: dict) -> tuple:
+    """Woran ein späterer Erfolg erkennt, dass er diesen Fehlschlag aufhebt.
+
+    Work-Order-Writes haben eine Nummer. Sheet-Writes haben keine — sie wurden
+    früher alle unter `wo=None` einsortiert, sodass ein beliebiger späterer
+    Sheet-Write die Warnung für eine verschobene Zeile stumm löschte.
+    """
+    tool = str(entry.get("tool") or "write")
+    if entry.get("wo") is not None:
+        return (tool, entry["wo"])
+    return (
+        tool,
+        entry.get("sheet") or "",
+        entry.get("tab") or "",
+        entry.get("row") or entry.get("key") or "",
+    )
+
+
+def _entry_label(entry: dict) -> str:
+    """Lesbare Bezeichnung — nie 'WO None'."""
+    tool = entry.get("tool") or "write"
+    if entry.get("wo") is not None:
+        return f"{tool} WO {entry['wo']}"
+    where = " · ".join(
+        str(part) for part in (entry.get("tab"), entry.get("key") or entry.get("row"))
+        if part
+    )
+    return f"{tool} {where}".strip()
+
+
 def warnings(root) -> list[str]:
     """Verletzte Invarianten. Leere Liste = alles in Ordnung."""
     from . import gdocs
@@ -92,9 +122,9 @@ def warnings(root) -> list[str]:
         resolved: set = set()
         pending: list[dict] = []
         for entry in reversed(recent):
-            wo = entry.get("wo")
+            key = _entry_key(entry)
             if entry.get("verified") is True:
-                resolved.add(wo)
+                resolved.add(key)
                 continue
             # Auch ältere Log-Zeilen erkennen: Refusals enden auf `_refused`,
             # bevor `refused=True` mitgeschrieben wurde.
@@ -104,15 +134,12 @@ def warnings(root) -> list[str]:
             # Lesevorgang) sind keine unbestätigten Writes.
             if entry.get("verified") is not False:
                 continue
-            if wo in resolved:
+            if key in resolved:
                 continue
-            resolved.add(wo)
+            resolved.add(key)
             pending.append(entry)
         if pending:
-            names = ", ".join(
-                f"{entry.get('tool', 'write')} WO {entry.get('wo', '?')}"
-                for entry in reversed(pending)
-            )
+            names = ", ".join(_entry_label(entry) for entry in reversed(pending))
             found.append(
                 f"Unbestätigter Schreibvorgang: {names} — Zeile steht nicht im "
                 "Dokument (Details: `atlas log`)."

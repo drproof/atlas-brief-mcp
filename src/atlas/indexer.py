@@ -76,6 +76,7 @@ END;
 CREATE TABLE IF NOT EXISTS tasks (
   id     INTEGER PRIMARY KEY,
   anchor TEXT NOT NULL,
+  path   TEXT,
   text   TEXT NOT NULL,
   done   INTEGER DEFAULT 0,
   owner  TEXT,
@@ -96,9 +97,27 @@ CREATE TABLE IF NOT EXISTS sync_state (
 CREATE INDEX IF NOT EXISTS idx_sections_doc ON sections(doc_id);
 CREATE INDEX IF NOT EXISTS idx_sections_path ON sections(path);
 CREATE INDEX IF NOT EXISTS idx_tasks_anchor ON tasks(anchor);
+CREATE INDEX IF NOT EXISTS idx_tasks_path ON tasks(path);
 """
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "2"
+
+# Alles, was aus den Quelldateien regenerierbar ist. Bei einem Schema-Wechsel
+# wird es verworfen und neu aufgebaut — Markdown bleibt die Wahrheit.
+CACHE_TABLES = ("sections_fts", "sections", "tasks", "docs", "sync_state")
+
+
+def _rebuild_cache(conn: sqlite3.Connection) -> None:
+    """Verwirft den Index bei geändertem Schema.
+
+    `CREATE TABLE IF NOT EXISTS` migriert nichts: Eine neue Spalte fehlt in
+    einer bestehenden Tabelle, und der erste Schreibzugriff scheitert mit
+    `OperationalError`. Weil der Index nur Cache ist, ist ein Neubau billiger
+    und ehrlicher als eine Migrationskette.
+    """
+    for name in CACHE_TABLES:
+        conn.execute(f"DROP TABLE IF EXISTS {name}")
+    conn.executescript(SCHEMA)
 
 
 def connect(path: Path) -> sqlite3.Connection:
@@ -112,12 +131,24 @@ def connect(path: Path) -> sqlite3.Connection:
 
 
 def init(conn: sqlite3.Connection) -> None:
-    conn.executescript(SCHEMA)
+    # Erst die Version prüfen, dann das Schema anwenden: SCHEMA enthält einen
+    # Index auf `tasks.path`, und `CREATE INDEX` scheitert an einer alten
+    # Tabelle ohne diese Spalte. `CREATE TABLE IF NOT EXISTS` migriert nichts.
+    conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
     row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
+
     if row is None:
+        conn.executescript(SCHEMA)
         conn.execute(
             "INSERT INTO meta(key, value) VALUES('schema_version', ?)", (SCHEMA_VERSION,)
         )
+    elif str(row["value"]) != SCHEMA_VERSION:
+        # Schema geändert: Cache verwerfen und neu aufbauen. Die nächste
+        # Indizierung füllt ihn wieder — Markdown ist die Wahrheit.
+        _rebuild_cache(conn)
+        conn.execute("UPDATE meta SET value=? WHERE key='schema_version'", (SCHEMA_VERSION,))
+    else:
+        conn.executescript(SCHEMA)
     conn.commit()
 
 
@@ -156,7 +187,9 @@ def index_file(conn: sqlite3.Connection, root: Path, path: Path) -> int:
     doc = meta_probe
 
     conn.execute("DELETE FROM sections WHERE path=?", (rel,))
-    conn.execute("DELETE FROM tasks WHERE anchor LIKE ?", (f"{doc_id}#%",))
+    # Per Pfad löschen, nicht per doc_id-Anker: Ändert sich die `id:` im
+    # Frontmatter, bleibt der alte Anker zurück und würde nie aufgeräumt.
+    conn.execute("DELETE FROM tasks WHERE path=?", (rel,))
     conn.execute("DELETE FROM docs WHERE path=?", (rel,))
     conn.execute("DELETE FROM docs WHERE id=?", (doc_id,))
 
@@ -198,8 +231,10 @@ def index_file(conn: sqlite3.Connection, root: Path, path: Path) -> int:
         )
         for line_no, text, done, owner, tag in _extract_tasks(section.body):
             conn.execute(
-                "INSERT INTO tasks(anchor, text, done, owner, tag, line) VALUES (?, ?, ?, ?, ?, ?)",
-                (section.anchor, text, done, owner, tag, section.line_start + line_no),
+                "INSERT INTO tasks(anchor, path, text, done, owner, tag, line) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (section.anchor, rel, text, done, owner, tag,
+                 section.line_start + line_no),
             )
     return len(doc.sections)
 
@@ -267,6 +302,9 @@ def refresh(conn: sqlite3.Connection, root: Path, force: bool = False) -> dict:
         indexed += 1
 
     for rel in known.keys() - seen:
+        # Auch die Tasks: Sonst bleiben Geister-Aufgaben gelöschter Dateien
+        # in `atlas tasks` und in der offenen Task-Zahl stehen.
+        conn.execute("DELETE FROM tasks WHERE path=?", (rel,))
         conn.execute("DELETE FROM docs WHERE path=?", (rel,))
         conn.execute("DELETE FROM sections WHERE path=?", (rel,))
         removed += 1

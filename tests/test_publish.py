@@ -1,4 +1,4 @@
-from atlas.publish import find_insert_index, format_line
+from atlas.publish import _insert_request, find_insert_index, format_line
 
 
 def test_format_done_with_title_and_description():
@@ -226,3 +226,20 @@ def test_newline_prefix_starts_a_new_paragraph():
 
     broken = text[:index] + line + "\n" + text[index:]
     assert "Abschnitts" + line in broken, "der alte Weg klebte die Zeile an"
+
+
+def test_insert_request_has_leading_newline():
+    """Der Request selbst: führender Umbruch, Tab-Sperre, kein Ankleben."""
+    body = _insert_request(14237, "Work Order 7 — ✅ ERLEDIGT (Test)")
+
+    request = body["requests"][0]["insertText"]
+    assert request["text"].startswith("\n"), "ohne führenden Umbruch klebt die Zeile"
+    assert request["text"].endswith("(Test)")
+    assert request["location"] == {"index": 14237}
+
+
+def test_insert_request_carries_tab_id():
+    """Bei einem Tab-Dokument muss die Location den Tab nennen."""
+    body = _insert_request(500, "Work Order 8 — ⬜ OFFEN (Test)", tab_id="t.5zmrz")
+
+    assert body["requests"][0]["insertText"]["location"]["tabId"] == "t.5zmrz"

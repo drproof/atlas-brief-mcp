@@ -268,36 +268,41 @@ def _shrink(payload: dict[str, Any], budget: int) -> str:
     """Reduziert eine Trefferliste stufenweise, bis sie ins Budget passt.
 
     Terminiert garantiert: Am Ende bleiben 0 Treffer plus Hinweis.
+
+    `truncated` wird **vor** jedem Budget-Vergleich gesetzt. Früher geschah das
+    danach — die Antwort war dann um die 19 Zeichen des Feldes zu lang, also
+    genau an der Stelle über dem Limit, die sie einhalten sollte.
     """
     text = _dumps(payload)
     if len(text) <= budget:
         return text
 
+    payload["truncated"] = True
+
     for hit in payload["hits"]:
         hit["snippet"], _ = _trim(hit.get("snippet", ""), 120)
     text = _dumps(payload)
     if len(text) <= budget:
-        payload["truncated"] = True
-        return _dumps(payload)
+        return text
 
     payload["hits"] = payload["hits"][:2]
+    payload["count"] = len(payload["hits"])
     for hit in payload["hits"]:
         hit["snippet"], _ = _trim(hit.get("snippet", ""), 60)
     if len(_dumps(payload)) <= budget:
-        payload["truncated"] = True
         return _dumps(payload)
 
     payload["hits"] = payload["hits"][:1]
+    payload["count"] = len(payload["hits"])
     if payload["hits"]:
         payload["hits"][0].pop("breadcrumb", None)
         payload["hits"][0].pop("doc_id", None)
         payload["hits"][0]["snippet"], _ = _trim(payload["hits"][0].get("snippet", ""), 40)
     if len(_dumps(payload)) <= budget:
-        payload["truncated"] = True
         return _dumps(payload)
 
     payload["hits"] = []
-    payload["truncated"] = True
+    payload["count"] = 0
     payload["hint"] = "max_chars zu klein für Trefferdetails — erhöhen."
     return _dumps(payload)
 

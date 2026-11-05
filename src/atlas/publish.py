@@ -265,6 +265,24 @@ def _attachment_gate(root: Path, wo: int, status: str,
     return {"verify": result}, ""
 
 
+def _insert_request(insert_index: int, line: str, tab_id: str = "") -> dict:
+    """Der Schreibvorgang: eigene Zeile, nicht am Vorabsatz klebend.
+
+    Der führende Umbruch ist der Kern. Ohne ihn landet der Text VOR dem
+    abschließenden Umbruch des Abschnitts und hängt am letzten Wort
+    ("…AbschnittsWork Order 7 — ✅"). Mit ihm entsteht ein eigener Absatz, der
+    den Stil des Vorabsatzes erbt — nicht den der Folge-Überschrift.
+    """
+    location = {"index": insert_index}
+    if tab_id:
+        location["tabId"] = tab_id
+    return {
+        "requests": [{
+            "insertText": {"location": location, "text": "\n" + line}
+        }],
+    }
+
+
 def publish(
     root: Path,
     conn,
@@ -405,15 +423,7 @@ def publish(
     if dry_run:
         return payload
 
-    location = {"index": insert_index}
-    if tab_id:
-        location["tabId"] = tab_id
-
-    body = {
-        "requests": [{
-            "insertText": {"location": location, "text": "\n" + line}
-        }],
-    }
+    body = _insert_request(insert_index, line, tab_id)
     if revision:
         body["writeControl"] = {"requiredRevisionId": revision}
 

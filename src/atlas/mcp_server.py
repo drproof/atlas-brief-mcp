@@ -97,8 +97,11 @@ def _fresh():
     root, conn = _state()
     from . import gdocs, normalize
 
-    # Projekt-Synonyme laden (.atlas/aliases.yml) — einmal, mtime-geprüft.
-    normalize.load_aliases(root / ".atlas" / "aliases.yml")
+    # Projekt-Synonyme laden — über cache_dir, damit auch `.gdd/`-Projekte
+    # ihre aliases.yml behalten.
+    from .config import cache_dir
+
+    normalize.load_aliases(cache_dir(root) / "aliases.yml")
     # Erst den Google-Stand nachziehen (mit 5-Minuten-Cache), dann indexieren.
     gdocs.auto_sync(root, conn)
     ensure_fresh(conn, root)

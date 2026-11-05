@@ -77,7 +77,7 @@ git clone https://github.com/drproof/atlas-brief-mcp
 cd atlas-brief-mcp
 
 atlas --root examples/demo doctor
-atlas --root examples/demo where "Where is the combat system?"
+atlas --root examples/demo where "Where is the damage model?"
 atlas --root examples/demo brief "damage calculation"
 ```
 

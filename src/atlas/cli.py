@@ -39,8 +39,8 @@ def _emit(payload: str, as_json: bool) -> None:
     if data.get("found"):
         print(f"{data['path']}:{data['line']}  § {data['heading']}")
         if data.get("breadcrumb"):
-            print(f"  Pfad: {data['breadcrumb']}")
-        print(f"  Anker: {data['anchor']}")
+            print(f"  Path: {data['breadcrumb']}")
+        print(f"  Anchor: {data['anchor']}")
         for alt in data.get("alternatives", []):
             print(f"  Alternativ: {alt['heading']}  [{alt['anchor']}]")
         return
@@ -54,7 +54,7 @@ def _emit(payload: str, as_json: bool) -> None:
     if "body" in data:
         print(f"§ {data['heading']}   ({data['path']}:{data['line']})")
         if data.get("breadcrumb"):
-            print(f"  Pfad: {data['breadcrumb']}")
+            print(f"  Path: {data['breadcrumb']}")
         print()
         print(data["body"])
         if data.get("truncated"):

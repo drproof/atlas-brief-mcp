@@ -336,7 +336,7 @@ def read(
     ).fetchall()
     if not rows:
         return _dumps({
-            "error": f"Anker '{anchor}' nicht gefunden.",
+            "error": f"anchor '{anchor}' not found.",
             "hint": "atlas_where() oder atlas_outline() nutzen.",
         })
 
@@ -470,7 +470,7 @@ def links(conn: sqlite3.Connection, anchor: str, max_chars: int = 400) -> str:
         (base, f"{base}~%"),
     ).fetchone()
     if row is None:
-        return _dumps({"error": f"Anker '{anchor}' nicht gefunden."})
+        return _dumps({"error": f"anchor '{anchor}' not found."})
 
     doc = conn.execute(
         "SELECT implements, tags FROM docs WHERE id=?", (row["doc_id"],)

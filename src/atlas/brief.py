@@ -126,7 +126,7 @@ def build(
         trail = f" — {hit['breadcrumb']}" if hit["breadcrumb"] else ""
         sections.append(
             f"### {payload['heading']}\n"
-            f"*{origin}{trail}* · Anker: `{base}`\n\n"
+            f"*{origin}{trail}* · anchor: `{base}`\n\n"
             f"{payload['body']}\n"
         )
         if budget <= 0:

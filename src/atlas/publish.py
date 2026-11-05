@@ -348,6 +348,18 @@ def publish(
         )
         return result
 
+    # Kein Google-Dokument an dieses Projekt gebunden: lokal in die verwaltete
+    # Markdown-Doku schreiben. Ohne diesen Zweig endete der Weg, den
+    # `atlas init` beschreibt („Status ist ein Tool-Call"), für jeden Nutzer
+    # ohne Google-Konto in einer Fehlermeldung.
+    if not gdocs.known_sources(conn):
+        from . import localwrite
+
+        return localwrite.publish(
+            root, conn, int(wo), format_line(wo, status, title, description),
+            section, dry_run=dry_run,
+        )
+
     creds = gdocs.load_credentials(interactive=False, client_secret=client_secret,
                                    scopes=gdocs.WRITE_SCOPES)
     drive, _sheets, docs = gdocs.build_services(creds)
@@ -551,6 +563,15 @@ def set_status(
             f"Work Order {wo} hat keinen erkennbaren Status ('{current['status']}') — "
             "im Doc von Hand prüfen."
         )
+
+    # Kein Google-Dokument an dieses Projekt gebunden: lokal in die verwaltete
+    # Markdown-Doku schreiben. Ohne diesen Zweig endete der Weg, den
+    # `atlas init` beschreibt („Status ist ein Tool-Call"), für jeden Nutzer
+    # ohne Google-Konto in einer Fehlermeldung.
+    if not gdocs.known_sources(conn):
+        from . import localwrite
+
+        return localwrite.set_status(root, conn, int(wo), status, dry_run=dry_run)
 
     creds = gdocs.load_credentials(interactive=False, client_secret=client_secret,
                                    scopes=gdocs.WRITE_SCOPES)

@@ -105,6 +105,22 @@ zu blockieren. Ohne `managed.json` — also in jedem Projekt vor dem ersten `ini
 
 ---
 
+## Schreiben ohne Google-Konto
+
+`atlas init` legt eine `docs/ARCHITECTURE.md` mit `Work Order 1 — ⬜ OFFEN` an.
+Ist kein Google-Dokument an das Projekt gebunden, schreibt `atlas` direkt in
+diese Datei — gleicher Vertrag, gleiche Verifikation (Rücklesen aus der Datei),
+gleiches Audit-Log:
+
+```bash
+atlas set-status --wo 1 --status done    # ⬜ OFFEN -> ✅ ERLEDIGT in der Markdown-Datei
+atlas status                            # liest den neuen Stand
+```
+
+Damit funktioniert der ganze Kreis — `init` → `where`/`read` → `code` →
+`set-status` mit Anbindungs-Gate → `doctor` — **ohne Cloud-Konto, ohne
+Netzwerk.** Erst wenn ein Google-Dokument die Quelle ist, braucht es `atlas auth`.
+
 ## Google Docs & Sheets (optional)
 
 Wenn die Doku in Google Docs lebt statt in Markdown, indiziert `atlas` sie über

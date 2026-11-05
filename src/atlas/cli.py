@@ -110,7 +110,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     parser = argparse.ArgumentParser(
         prog="atlas",
-        description="GDD-Index: Game Design Document durchsuchbar für Agenten und Terminal.",
+        description="atlas: Projekt- und Design-Dokumentation durchsuchbar für Agenten und Terminal.",
         parents=[common],
     )
     sub = parser.add_subparsers(dest="command", required=True)

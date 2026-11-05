@@ -66,7 +66,7 @@ def run_search(
     # Work-Order-Logbücher wiederholen alle System- und Klassennamen und gewinnen
     # dadurch bei Systemfragen gegen die Dokumentation. Abwerten, nicht ausblenden:
     # bei Begriffen, die nur dort stehen ('Kriegshorn'), bleiben sie nützlich.
-    log_headings = _log_headings(conn, rows)
+    log_penalties = _log_penalty(conn, rows)
 
     wanted = terms(query)
     # Auch Teilwörter für den Heading-Boost: 'helden-klassen' soll 'Helden, Skills
@@ -91,9 +91,8 @@ def run_search(
         if _looks_like_index(row["body"] or ""):
             score /= 2.5
         # Work-Order-Logbuch: wiederholt alle Systemnamen und verdrängt damit die
-        # Themenseiten (siehe _log_headings).
-        if (row["doc_id"], row["heading"]) in log_headings:
-            score /= 4.0
+        # Themenseiten (siehe _log_penalty).
+        score *= log_penalties.get((row["doc_id"], row["heading"]), 1.0)
         results.append({
             "anchor": row["anchor"],
             "doc_id": row["doc_id"],
@@ -147,26 +146,48 @@ def _looks_like_index(body: str) -> bool:
 
 WO_LINE_RE = re.compile(r"Work\s*Order\s*\d+\s*[—–:\-]", re.IGNORECASE)
 
+# Ab dieser Zahl von Work-Order-Zeilen ist ein Abschnitt ein Logbuch.
+# Vorher stand hier 3 — damit galt auch der Prototyp-Meilenstein-Plan mit fünf
+# Einträgen als Logbuch und verlor gegen jeden Fließtext-Absatz.
+LOG_MIN_LINES = 8
+# Ab hier ist es ein echtes Logbuch: voller Malus.
+LOG_HARD_LINES = 16
+# Überschriften, die eine Übersicht ankündigen — nie ein Logbuch, egal wie
+# viele Work Orders darunter stehen.
+LOG_HEADING_HINTS = ("plan", "meilenstein", "roadmap", "übersicht", "fahrplan",
+                     "backlog", "statusübersicht")
 
-def _log_headings(conn: sqlite3.Connection, rows) -> set[tuple[str, str]]:
-    """Headings, die insgesamt ein Work-Order-Logbuch sind.
+
+def _log_penalty(conn: sqlite3.Connection, rows) -> dict[tuple[str, str], float]:
+    """Score-Malus für Abschnitte, die ein Work-Order-Logbuch sind.
 
     Der Chunker zerlegt einen langen Abschnitt in Teile von 1500 Zeichen. Ein
     einzelner Teil enthält dann nur 1–2 Work-Order-Zeilen und sieht wie ein
     normaler Abschnitt aus. Deshalb wird über **alle** Teile eines Headings
     gezählt, nicht pro Teil.
+
+    Rückgabe: `{(doc_id, heading): faktor}`. Fehlt ein Heading, gilt 1.0.
     """
-    verdict: dict[tuple[str, str], bool] = {}
+    verdict: dict[tuple[str, str], float] = {}
     for row in rows:
         key = (row["doc_id"], row["heading"])
         if key in verdict:
+            continue
+        heading_low = (row["heading"] or "").casefold()
+        if any(hint in heading_low for hint in LOG_HEADING_HINTS):
+            verdict[key] = 1.0
             continue
         parts = conn.execute(
             "SELECT body FROM sections WHERE doc_id=? AND heading=?", key
         ).fetchall()
         total = sum(len(WO_LINE_RE.findall(part["body"] or "")) for part in parts)
-        verdict[key] = total >= 3
-    return {key for key, is_log in verdict.items() if is_log}
+        if total < LOG_MIN_LINES:
+            verdict[key] = 1.0
+        elif total < LOG_HARD_LINES:
+            verdict[key] = 0.5   # halber Malus: Übersicht mit vielen Einträgen
+        else:
+            verdict[key] = 0.25  # voller Malus: Logbuch
+    return {key: factor for key, factor in verdict.items() if factor < 1.0}
 
 
 def _compound_clause(conn: sqlite3.Connection, query: str) -> str | None:

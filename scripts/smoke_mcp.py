@@ -104,7 +104,7 @@ def main() -> int:
             # geladene AGENTS.md sieht — sie müssen im Handshake ankommen.
             instructions = result.get("instructions") or ""
             missing = [needle for needle in
-                       (".atlas/cache", "grünen Tests", "atlas_set_status", "row_key")
+                       (".atlas/cache", "tests are green", "atlas_set_status", "row_key")
                        if needle not in instructions]
             if missing:
                 failures += 1

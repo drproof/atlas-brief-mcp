@@ -202,3 +202,26 @@ def test_unwired_ignores_decorated_functions(tmp_path):
 
     assert "registered_tool" not in symbols
     assert "plain_function" in symbols
+
+
+def test_core_symbols_are_the_big_ones_not_the_first(tmp_path):
+    """`_ready` und Getter sind keine Kern-Symbole, auch wenn sie oben stehen."""
+    root = tmp_path / "proj"
+    root.mkdir()
+    (root / "game.gd").write_text(
+        "extends Node\n\n"
+        "func _ready() -> void:\n\tpass\n\n"
+        "func get_int(key: String) -> int:\n\treturn 0\n\n"
+        "func get_float(key: String) -> float:\n\treturn 0.0\n\n"
+        "func resolve_combat_round(attacker, defender) -> Dictionary:\n"
+        + "".join(f"\tvar value_{i} := {i}\n" for i in range(12))
+        + "\treturn {}\n",
+        encoding="utf-8",
+    )
+
+    scan = bootstrap.scan_repository(root)
+    symbols = scan["domains"]["(Wurzel)"]["symbols"]
+
+    assert symbols[0] == "resolve_combat_round"
+    assert "_ready" not in symbols
+    assert "get_int" not in symbols

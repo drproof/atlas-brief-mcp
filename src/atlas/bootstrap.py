@@ -53,6 +53,54 @@ def _iter_sources(root: Path):
                 yield Path(dirpath) / name
 
 
+VIRTUAL_NAMES = {
+    "_ready", "_init", "_process", "_physics_process", "_input", "_unhandled_input",
+    "_unhandled_key_input", "_enter_tree", "_exit_tree", "_draw", "_notification",
+    "_to_string", "__init__", "__str__", "__repr__", "constructor", "render", "componentDidMount",
+}
+CORE_SYMBOL_MIN_LINES = 8
+
+
+def _core_symbols(text: str, limit: int = 12) -> list[str]:
+    """Die größten Funktionen einer Datei — nicht die ersten.
+
+    Die ersten zwölf `func`-Zeilen einer GDScript-Datei sind `_ready`, `get_int`,
+    `get_float`, `next_int`: Virtuals und triviale Getter. Als „Kern-Symbole"
+    sind sie wertlos. Interessant ist, wo Logik steht, und die steht in den
+    langen Funktionen.
+    """
+    lines = text.splitlines()
+    sized: list[tuple[int, str]] = []
+    for match in DEF_RE.finditer(text):
+        name = match.group("name")
+        if name in VIRTUAL_NAMES:
+            continue
+        start = text.count("\n", 0, match.start())
+        end = start
+        for offset in range(start + 1, len(lines)):
+            # Alles, was auf Spalte 0 beginnt, beendet den Rumpf — ob neue
+            # Funktion oder Konstante. Die frühere Bedingung war invertiert und
+            # zählte jede Funktion bis zum Dateiende.lines[offset]
+            if lines[offset] and not lines[offset][0].isspace():
+                break
+            end = offset
+        length = max(1, end - start + 1)
+        if length < CORE_SYMBOL_MIN_LINES:
+            continue
+        sized.append((length, name))
+    sized.sort(key=lambda item: -item[0])
+    seen: set[str] = set()
+    result: list[str] = []
+    for _length, name in sized:
+        if name in seen:
+            continue
+        seen.add(name)
+        result.append(name)
+        if len(result) >= limit:
+            break
+    return result
+
+
 def scan_repository(root: Path) -> dict:
     """Dateien nach Domäne, Tokens, Hotspots und unverdrahtete Symbole."""
     root = Path(root)
@@ -74,14 +122,23 @@ def scan_repository(root: Path) -> dict:
         bucket["files"].append({"path": rel, "lines": len(text.splitlines()),
                                 "tokens": tokens})
         bucket["tokens"] += tokens
-        for match in DEF_RE.finditer(text):
-            name = match.group("name")
-            if name not in bucket["symbols"]:
+        # Die Symbole der größten Datei zuerst, damit die Domänenliste die
+        # Logik zeigt und nicht zwölf Getter aus einer Zufallsdatei.
+        for name in _core_symbols(text, limit=6):
+            if name not in bucket["symbols"] and len(bucket["symbols"]) < 12:
                 bucket["symbols"].append(name)
 
     for bucket in domains.values():
         bucket["files"].sort(key=lambda item: -item["tokens"])
-        bucket["symbols"] = bucket["symbols"][:12]
+        # Kern-Symbole aus den größten Dateien der Domäne, nicht aus den
+        # erstbesten: In einer 60-Zeilen-Hilfsdatei steht kein Kern.
+        texts = {rel: text for rel, text, _t in sources}
+        symbols: list[str] = []
+        for item in bucket["files"][:5]:
+            for name in _core_symbols(texts.get(item["path"], ""), limit=4):
+                if name not in symbols:
+                    symbols.append(name)
+        bucket["symbols"] = symbols[:12]
 
     hotspots = [
         {"path": rel, "tokens": tokens}
@@ -136,8 +193,8 @@ def _find_unwired(sources: list[tuple[str, str, int]]) -> list[dict]:
             end = start
             for offset in range(start + 1, len(lines)):
                 line = lines[offset]
-                if line and not line[0].isspace() and DEF_RE.match(line + "(") is None:
-                    break
+                if line and not line[0].isspace():
+                    break  # Spalte 0 = Rumpf zu Ende
                 end = offset
             length = max(1, end - start + 1)
             if length < UNWIRED_MIN_LINES:

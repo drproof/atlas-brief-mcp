@@ -92,6 +92,7 @@ def set_status(root: Path, conn, wo: int, status: str,
     if found is None:
         return {
             "written": False,
+            "changed": False,
             "verified": False,
             "reason": f"Work Order {wo} steht in keiner lokalen Doku-Datei. "
                       "Erst `atlas publish` oder die Zeile manuell anlegen.",
@@ -104,6 +105,7 @@ def set_status(root: Path, conn, wo: int, status: str,
     if new_line == old_line:
         return {
             "written": False,
+            "changed": False,
             "unchanged": True,
             "verified": True,
             "wo": int(wo),
@@ -114,6 +116,7 @@ def set_status(root: Path, conn, wo: int, status: str,
 
     payload = {
         "written": not dry_run,
+        "changed": not dry_run,
         "dry_run": dry_run,
         "wo": int(wo),
         "status": status.lower(),

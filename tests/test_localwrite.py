@@ -108,4 +108,15 @@ def test_unknown_work_order_explains_the_next_step(tmp_path):
     payload = localwrite.set_status(root, conn, 99, "done")
 
     assert payload["verified"] is False
+    assert payload["changed"] is False
     assert "atlas publish" in payload["reason"]
+
+
+def test_local_set_status_carries_changed_and_verify_gate(tmp_path):
+    root, conn = _project(tmp_path)
+
+    payload = publish_mod.set_status(root, conn, 1, "done")
+
+    assert payload["changed"] is True
+    assert payload["written"] is True
+    assert "verify" in payload

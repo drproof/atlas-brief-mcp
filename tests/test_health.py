@@ -95,3 +95,11 @@ def test_header_never_raises(tmp_path, monkeypatch):
 
     monkeypatch.setattr(health, "warnings", boom)
     assert health.header(tmp_path) == ""
+
+
+def test_local_write_does_not_demand_google_write_scopes(tmp_path, monkeypatch):
+    """Ein lokaler Markdown-Write braucht kein Google-Schreibtoken."""
+    _log(tmp_path, [{"tool": "set_status", "wo": 1, "source": "local", "verified": True}])
+    _token(tmp_path, ["https://www.googleapis.com/auth/drive.readonly"], monkeypatch)
+
+    assert health.warnings(tmp_path) == []

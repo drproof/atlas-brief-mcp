@@ -243,3 +243,28 @@ def test_insert_request_carries_tab_id():
     body = _insert_request(500, "Work Order 8 — ⬜ OFFEN (Test)", tab_id="t.5zmrz")
 
     assert body["requests"][0]["insertText"]["location"]["tabId"] == "t.5zmrz"
+
+
+def test_publish_live_doc_guard_switches_status_when_index_lags(monkeypatch, tmp_path):
+    """Index kennt WO 9 noch nicht (`extract_work_orders == []`), aber das Live-Doc hat sie."""
+    fake = FakeDocs()
+    fake.tabs[0]["text"] = "Work Order 9 — ⬜ OFFEN (Headless-Tests)\n"
+    monkeypatch.setattr(gdocs, "build_services", lambda creds: (None, None, fake))
+    monkeypatch.setattr(gdocs, "known_sources", lambda conn: [
+        {"id": "doc-1", "name": "Master GDD", "mimeType": gdocs.DOC_MIME}
+    ])
+    monkeypatch.setattr(gdocs, "assert_writable", lambda conn, file_id: None)
+    monkeypatch.setattr(gdocs, "sync", lambda *args, **kwargs: {"written": []})
+    monkeypatch.setattr(gdocs, "load_credentials", lambda **kwargs: object())
+    monkeypatch.setattr(publish, "find_insert_index", lambda body, section: (10, section))
+    monkeypatch.setattr(status_mod, "extract_work_orders", lambda conn: [])
+    monkeypatch.setattr(status_mod, "status", lambda conn: json.dumps({
+        "work_orders": [{"wo": 9, "status": "done", "title": "Headless-Tests"}]
+    }))
+
+    result = publish.publish(tmp_path, None, 9, status="done", title="Headless-Tests")
+
+    assert result["changed"] is True
+    assert result["reused_set_status"] is True
+    assert result["verified"] is True
+    assert "✅ ERLEDIGT" in fake.tabs[0]["text"]

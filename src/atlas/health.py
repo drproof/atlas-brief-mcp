@@ -73,7 +73,7 @@ def _entry_key(entry: dict) -> tuple:
     """
     tool = str(entry.get("tool") or "write")
     if entry.get("wo") is not None:
-        return (tool, entry["wo"])
+        return ("wo", entry["wo"])
     return (
         tool,
         entry.get("sheet") or "",
@@ -100,7 +100,7 @@ def warnings(root) -> list[str]:
 
     found: list[str] = []
     recent = _recent(root)
-    ever_wrote = any(entry.get("verified") is True for entry in recent)
+    ever_wrote = any(entry.get("verified") is True and entry.get("source") != "local" for entry in recent)
 
     # 1. Schreib-Scopes verloren, obwohl schon einmal geschrieben wurde.
     if ever_wrote:

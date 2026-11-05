@@ -355,10 +355,11 @@ def publish(
     if not gdocs.known_sources(conn):
         from . import localwrite
 
-        return localwrite.publish(
+        result = localwrite.publish(
             root, conn, int(wo), format_line(wo, status, title, description),
             section, dry_run=dry_run,
         )
+        return {**result, **gate}
 
     creds = gdocs.load_credentials(interactive=False, client_secret=client_secret,
                                    scopes=gdocs.WRITE_SCOPES)
@@ -418,8 +419,10 @@ def publish(
         tab_text(body) for _tid, _title, body in iter_tab_bodies(target["document"])
     )
     if _status_line_re(int(wo)).search(live_text):
-        return set_status(root, conn, wo, status=status, dry_run=dry_run,
-                          client_secret=client_secret, verify_symbols=verify_symbols)
+        result = set_status(root, conn, wo, status=status, dry_run=dry_run,
+                            client_secret=client_secret, verify_symbols=verify_symbols)
+        result["reused_set_status"] = True
+        return result
 
     revision = target["document"].get("revisionId", "")
     payload = {
@@ -549,21 +552,6 @@ def set_status(
 
     items = status_mod.extract_work_orders(conn)
     current = next((item for item in items if item["wo"] == int(wo)), None)
-    if current is None:
-        raise gdocs.SyncError(
-            f"Work Order {wo} ist nicht dokumentiert. Erst `atlas publish --wo {wo} …`."
-        )
-    if current["status"] == status.lower():
-        return {"changed": False, "wo": int(wo), "status": status,
-                "reason": "Status ist bereits gesetzt"}
-
-    old_mark = gdocs.STATUS_MARK.get(current["status"])
-    if old_mark is None:
-        raise gdocs.SyncError(
-            f"Work Order {wo} hat keinen erkennbaren Status ('{current['status']}') — "
-            "im Doc von Hand prüfen."
-        )
-
     # Kein Google-Dokument an dieses Projekt gebunden: lokal in die verwaltete
     # Markdown-Doku schreiben. Ohne diesen Zweig endete der Weg, den
     # `atlas init` beschreibt („Status ist ein Tool-Call"), für jeden Nutzer
@@ -571,7 +559,32 @@ def set_status(
     if not gdocs.known_sources(conn):
         from . import localwrite
 
-        return localwrite.set_status(root, conn, int(wo), status, dry_run=dry_run)
+        if current is not None and current["status"] == status.lower():
+            return {"changed": False, "wo": int(wo), "status": status,
+                    "reason": "Status ist bereits gesetzt", **gate}
+        result = localwrite.set_status(root, conn, int(wo), status, dry_run=dry_run)
+        return {**result, **gate}
+
+    old_marks: list[str] = []
+    if current is not None:
+        if current["status"] == status.lower():
+            return {"changed": False, "wo": int(wo), "status": status,
+                    "reason": "Status ist bereits gesetzt"}
+        old_mark = gdocs.STATUS_MARK.get(current["status"])
+        if old_mark is None:
+            raise gdocs.SyncError(
+                f"Work Order {wo} hat keinen erkennbaren Status ('{current['status']}') — "
+                "im Doc von Hand prüfen."
+            )
+        old_marks = [old_mark]
+    else:
+        # Der Index kann hinter dem Live-Dokument herhinken (`index_lag` nach
+        # `publish`). Deshalb bei bekannten Google-Quellen erst im Live-Doc
+        # nachsehen, statt blind am veralteten Index mit SyncError abzubrechen.
+        old_marks = [
+            mark for key, mark in gdocs.STATUS_MARK.items()
+            if key != status.lower()
+        ]
 
     creds = gdocs.load_credentials(interactive=False, client_secret=client_secret,
                                    scopes=gdocs.WRITE_SCOPES)
@@ -600,13 +613,29 @@ def set_status(
         # gemeldet, obwohl die Zeile einfach anders formatiert ist.
         old_text = ""
         new_text = ""
-        for separator in SEPARATORS:
-            candidate = f"Work Order {int(wo)} {separator} {old_mark}"
-            if candidate in haystack:
-                old_text = candidate
-                new_text = f"Work Order {int(wo)} {separator} {new_mark}"
+        for candidate_mark in old_marks:
+            for separator in SEPARATORS:
+                candidate = f"Work Order {int(wo)} {separator} {candidate_mark}"
+                if candidate in haystack:
+                    old_text = candidate
+                    new_text = f"Work Order {int(wo)} {separator} {new_mark}"
+                    break
+            if old_text:
                 break
         if not old_text:
+            if current is None and any(
+                f"Work Order {int(wo)} {separator} {new_mark}" in haystack
+                for separator in SEPARATORS
+            ):
+                return {
+                    "changed": False,
+                    "written": False,
+                    "unchanged": True,
+                    "wo": int(wo),
+                    "status": status.lower(),
+                    "reason": "Status ist bereits gesetzt",
+                    **gate,
+                }
             samples.extend(_work_order_lines(tab_texts, wo))
             continue
 
@@ -643,10 +672,14 @@ def set_status(
                 "verified_via": "documents.get",
                 "current_status": now["status"] if now else "unbekannt",
             })
-            if payload["verified"] and now and now["status"] != status.lower():
+            if payload["verified"] and (now is None or now["status"] != status.lower()):
                 payload["index_lag"] = True
+                from .indexer import invalidate_sync_state
+
+                invalidate_sync_state(conn, source["id"])
+                shown = now["status"] if now else "unbekannt"
                 payload["warning"] = (
-                    f"Dokument ist umgestellt, der Index zeigt noch '{now['status']}' "
+                    f"Dokument ist umgestellt, der Index zeigt noch '{shown}' "
                     "(Drive-Export hinkt nach)."
                 )
             audit.log(root, "set_status", wo=wo, old=old_text, new=new_text,
@@ -660,10 +693,14 @@ def set_status(
             "ersetzen — vermutlich über mehrere Text-Runs verteilt. Im Doc prüfen."
         )
 
+    if current is None:
+        raise gdocs.SyncError(
+            f"Work Order {wo} ist nicht dokumentiert. Erst `atlas publish --wo {wo} …`."
+        )
     hint = f" Gefunden stattdessen: {'; '.join(samples)}" if samples else ""
     raise gdocs.SyncError(
         f"Statuszeile für Work Order {wo} in keinem Dokument gefunden "
-        f"(erwartet: 'Work Order {wo} — {old_mark}').{hint}"
+        f"(erwartet: 'Work Order {wo} — {old_marks[0]}').{hint}"
     )
 
 

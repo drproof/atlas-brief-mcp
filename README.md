@@ -92,9 +92,16 @@ nichts. Ein Bootstrap, der deine handgeschriebenen Regeln plattmacht, wird genau
 einmal benutzt.
 
 ```bash
+atlas init --dry-run            # zeigt, was entstehen würde — schreibt nichts
 atlas init --out docs/ARCH.md   # anderer Pfad
 atlas init --force              # Doku bewusst neu erzeugen
 ```
+
+`init` merkt sich in `.atlas/managed.json`, welche Dokumente es erzeugt hat.
+`atlas lint` unterscheidet danach: **verwaltete** Dokumente müssen sauber sein
+(Exit-Code 1), **gefundene** Alt-Doku wird als Hinweis gezeigt, ohne die Abnahme
+zu blockieren. Ohne `managed.json` — also in jedem Projekt vor dem ersten `init`
+— gilt weiter alles als verwaltet.
 
 ---
 

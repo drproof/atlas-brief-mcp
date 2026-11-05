@@ -483,27 +483,41 @@ def main(argv: list[str] | None = None) -> int:
 
         print(status_mod.status_text(data))
     elif args.command == "lint":
-        from . import lint as lint_mod
+        from . import bootstrap, lint as lint_mod
 
-        raw = lint_mod.lint(conn)
-        if as_json:
-            print(json.dumps(json.loads(raw), ensure_ascii=False, indent=2))
-            return 0
+        # Ohne managed.json ist alles verwaltet (Altprojekte, Google Docs) —
+        # mit managed.json entscheidet nur atlas-eigene Doku über den Exit-Code.
+        managed = bootstrap.load_managed(root)
+        raw = lint_mod.lint(conn, managed=managed)
         data = json.loads(raw)
+        if as_json:
+            print(json.dumps(data, ensure_ascii=False, indent=2))
+            return 0 if data.get("ok") else 1
+
         print(f"Struktur-Check: {data['sections']} Abschnitte")
+        if managed is not None:
+            print(f"  verwaltet: {data['managed_issues']} Befunde · "
+                  f"Altbestand: {data['discovered_issues']}")
         if not data["counts"]:
             print("Keine Befunde.")
             return 0
+
         for kind, count in data["counts"].items():
             print(f"  {kind:<22} {count}")
         print()
         for issue in data["issues"][:15]:
             where = f"{issue['path']}:{issue['line']}" if issue["path"] else "—"
-            print(f"[{issue['severity']:<7}] {issue['type']:<18} {where}")
+            scope = "" if issue.get("scope") == "managed" else " (Altbestand)"
+            print(f"[{issue['severity']:<7}] {issue['type']:<18} {where}{scope}")
             print(f"          § {issue['heading']}")
             print(f"          {issue['detail']}")
         if len(data["issues"]) > 15:
             print(f"\n… {len(data['issues']) - 15} weitere (--json für alle)")
+
+        if data["discovered_issues"] and not data["managed_issues"]:
+            print("\nDie Befunde betreffen nur fremde Alt-Doku — atlas-Dokumente "
+                  "sind sauber.")
+        return 0 if data.get("ok") else 1
     elif args.command == "doctor":
         from . import status as status_mod, verify
 

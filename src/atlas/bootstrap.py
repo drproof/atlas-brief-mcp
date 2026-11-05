@@ -497,6 +497,52 @@ MCP_TEMPLATE = """{{
 
 GITIGNORE_LINES = (".atlas/", ".gdd/", "__pycache__/", "*.pyc")
 
+MANAGED_FILE = "managed.json"
+
+
+def managed_path(root) -> Path:
+    from .config import cache_dir
+
+    return cache_dir(root) / MANAGED_FILE
+
+
+def load_managed(root) -> set[str] | None:
+    """Dateien, die `atlas init` erzeugt hat. None = keine Liste vorhanden.
+
+    `None` und `set()` bedeuten Verschiedenes: None heißt „dieses Projekt kennt
+    kein managed-Konzept, prüfe alles" (Altprojekte, Google-Docs-Setups).
+    Ein leeres Set hieße „nichts ist verwaltet" und würde lint entwurzeln.
+    """
+    import json
+
+    path = managed_path(root)
+    if not path.exists():
+        return None
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    paths = data.get("paths") or []
+    return {str(item).replace("\\", "/").lstrip("./") for item in paths}
+
+
+def save_managed(root, paths: list[str]) -> Path:
+    import json
+
+    from .config import cache_dir
+
+    target = cache_dir(root) / MANAGED_FILE
+    target.parent.mkdir(parents=True, exist_ok=True)
+    normalized = sorted({str(p).replace("\\", "/").lstrip("./") for p in paths})
+    target.write_text(
+        json.dumps(
+            {"paths": normalized, "generator": "atlas init"},
+            ensure_ascii=False, indent=2,
+        ) + "\n",
+        encoding="utf-8",
+    )
+    return target
+
 
 def _write_if_absent(path: Path, content: str) -> bool:
     if path.exists():
@@ -586,6 +632,15 @@ def init_project(root, out: str | Path = "docs/ARCHITECTURE.md",
         "created": created,
         "kept": kept,
     }
+    if not dry_run:
+        # `lint` muss später wissen, welche Dokumente atlas erzeugt hat: nur die
+        # entscheiden über den Exit-Code. Fremde Alt-Doku wird gezeigt, nicht
+        # gewertet. Vorhandene Einträge bleiben erhalten.
+        existing = load_managed(root) or set()
+        relative = out_path.relative_to(root).as_posix()
+        save_managed(root, sorted(existing | {relative}))
+        report["managed"] = sorted(existing | {relative})
+        created.append(f"{managed_path(root).relative_to(root).as_posix()}")
     if dry_run:
         report["would_create"] = would_create
     return report

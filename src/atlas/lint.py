@@ -17,10 +17,11 @@ ESCAPED_RE = re.compile(r"\\[.\-_*\[\]#!|>~]")
 MAX_ISSUES = 200
 
 
-def _issue(kind: str, severity: str, row, detail: str) -> dict:
+def _issue(kind: str, severity: str, row, detail: str, scope: str = "managed") -> dict:
     return {
         "type": kind,
         "severity": severity,
+        "scope": scope,
         "anchor": row["anchor"],
         "path": row["path"],
         "line": row["line_start"],
@@ -29,7 +30,26 @@ def _issue(kind: str, severity: str, row, detail: str) -> dict:
     }
 
 
-def lint(conn: sqlite3.Connection, max_issues: int = MAX_ISSUES) -> str:
+def _scope_of(path: str, managed: set[str] | None) -> str:
+    """Gehört diese Datei zu dem, was `atlas` verwaltet — oder ist sie Altbestand?
+
+    Ohne `managed`-Liste ist alles verwaltet: Das ist der Stand vor `atlas init`
+    und der von Google-Docs-Projekten, wo es nur eine Quelle gibt. Wer nichts
+    konfiguriert, bekommt exakt das bisherige Verhalten.
+    """
+    if managed is None:
+        return "managed"
+    normalized = path.replace("\\", "/").lstrip("./")
+    if normalized in managed:
+        return "managed"
+    # Der Sync-Cache ist immer verwaltet: Google Docs sind die Quelle.
+    if normalized.startswith(".atlas/cache/") or normalized.startswith(".gdd/cache/"):
+        return "managed"
+    return "discovered"
+
+
+def lint(conn: sqlite3.Connection, max_issues: int = MAX_ISSUES,
+         managed: set[str] | None = None) -> str:
     rows = conn.execute(
         "SELECT doc_id, anchor, path, heading, level, body, chars, line_start, part, parts "
         "FROM sections ORDER BY doc_id, rowid"
@@ -39,16 +59,19 @@ def lint(conn: sqlite3.Connection, max_issues: int = MAX_ISSUES) -> str:
     counts: dict[str, int] = {}
     heading_seen: dict[str, int] = {}
     previous: dict[str, tuple[int, str]] = {}
+    doc_paths: dict[str, str] = {}
 
     for index, row in enumerate(rows):
         doc = row["doc_id"]
         heading = row["heading"].strip()
         body = row["body"] or ""
+        scope = _scope_of(row["path"] or "", managed)
+        doc_paths.setdefault(doc, row["path"] or "")
 
         def add(kind: str, severity: str, detail: str) -> None:
             counts[kind] = counts.get(kind, 0) + 1
             if len(issues) < max_issues:
-                issues.append(_issue(kind, severity, row, detail))
+                issues.append(_issue(kind, severity, row, detail, scope))
 
         if not heading:
             add("empty_heading", "hoch",
@@ -108,13 +131,15 @@ def lint(conn: sqlite3.Connection, max_issues: int = MAX_ISSUES) -> str:
     duplicates = {key: value for key, value in heading_seen.items() if value > 1}
     for key, value in duplicates.items():
         doc, heading = key.split("::", 1)
+        path = doc_paths.get(doc, "")
         counts["duplicate_heading"] = counts.get("duplicate_heading", 0) + value - 1
         if len(issues) < max_issues:
             issues.append({
                 "type": "duplicate_heading",
                 "severity": "niedrig",
+                "scope": _scope_of(path, managed),
                 "anchor": "",
-                "path": "",
+                "path": path,
                 "line": 0,
                 "heading": heading[:70],
                 "detail": f"'{heading}' kommt {value}× in {doc} vor — Anker werden durchnummeriert",
@@ -123,10 +148,16 @@ def lint(conn: sqlite3.Connection, max_issues: int = MAX_ISSUES) -> str:
     order = {"hoch": 0, "mittel": 1, "niedrig": 2}
     issues.sort(key=lambda item: (order.get(item["severity"], 3), item["type"]))
 
+    managed_issues = [item for item in issues if item.get("scope") == "managed"]
     payload = {
         "sections": len(rows),
         "counts": dict(sorted(counts.items(), key=lambda item: -item[1])),
         "issues": issues,
+        # Nur was atlas selbst verwaltet, entscheidet über den Exit-Code.
+        # Fremde Alt-Doku wird gezeigt, aber nicht zur Abnahme gezählt.
+        "ok": len(managed_issues) == 0,
+        "managed_issues": len(managed_issues),
+        "discovered_issues": len(issues) - len(managed_issues),
         "truncated": len(issues) >= max_issues,
     }
     return json.dumps(payload, ensure_ascii=False)

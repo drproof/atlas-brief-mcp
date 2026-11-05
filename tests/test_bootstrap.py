@@ -99,7 +99,9 @@ def test_second_init_keeps_existing_files(tmp_path):
     second = bootstrap.init_project(root)
 
     assert "docs/ARCHITECTURE.md" in second["kept"]
-    assert second["created"] == [] or all("gitignore" in c for c in second["created"])
+    # Ein zweiter Lauf darf nur die Verwaltungsliste anfassen, keine Doku
+    # und keine Regeldatei.
+    assert all("managed.json" in c or "gitignore" in c for c in second["created"])
     assert doc.read_text(encoding="utf-8") == before
 
 

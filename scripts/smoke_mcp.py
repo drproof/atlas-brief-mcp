@@ -57,9 +57,9 @@ def main() -> int:
         {"jsonrpc": "2.0", "method": "notifications/initialized"},
         {"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}},
         {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
-         "params": {"name": "atlas_where", "arguments": {"topic": "Wo finde ich das Kampfsystem?"}}},
+         "params": {"name": "atlas_where", "arguments": {"topic": "Where is the damage model?"}}},
         {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
-         "params": {"name": "atlas_where", "arguments": {"topic": "Rüstung"}}},
+         "params": {"name": "atlas_where", "arguments": {"topic": "dialogue conditions"}}},
         {"jsonrpc": "2.0", "id": 5, "method": "tools/call",
          "params": {"name": "atlas_outline", "arguments": {}}},
         {"jsonrpc": "2.0", "id": 6, "method": "tools/call",
@@ -117,7 +117,7 @@ def main() -> int:
         elif message_id in (3, 4):
             text = result["content"][0]["text"]
             data = json.loads(text)
-            label = "Kampfsystem" if message_id == 3 else "Dialogtool"
+            label = "damage model" if message_id == 3 else "dialogue conditions"
             if data.get("found"):
                 print(f"[ok] where({label}) -> {data['path']}:{data['line']} § {data['heading']}")
                 print(f"     {len(text)} Zeichen (~{len(text)//4} Tokens), Anker {data['anchor']}")

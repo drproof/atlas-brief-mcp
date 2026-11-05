@@ -1,5 +1,8 @@
 # atlas
 
+[![Tests](https://github.com/drproof/atlas-brief-mcp/actions/workflows/tests.yml/badge.svg)](https://github.com/drproof/atlas-brief-mcp/actions/workflows/tests.yml)
+[![atlas-brief-mcp MCP server – quality and maintenance score on Glama](https://glama.ai/mcp/servers/drproof/atlas-brief-mcp/badges/score.svg)](https://glama.ai/mcp/servers/drproof/atlas-brief-mcp)
+
 Project documentation as an index, not as context fuel.
 
 A local MCP server for coding agents. Ask "where is the damage model

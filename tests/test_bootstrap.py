@@ -225,3 +225,64 @@ def test_core_symbols_are_the_big_ones_not_the_first(tmp_path):
     assert symbols[0] == "resolve_combat_round"
     assert "_ready" not in symbols
     assert "get_int" not in symbols
+
+
+def test_class_methods_have_correct_length(tmp_path):
+    """Eine Methode endet an der nächsten Methode, nicht am Klassenende."""
+    root = tmp_path / "proj"
+    root.mkdir()
+    (root / "service.py").write_text(
+        "class Service:\n"
+        "    def short_a(self):\n"
+        "        return 1\n"
+        "\n"
+        "    def short_b(self):\n"
+        "        return 2\n"
+        "\n"
+        "    def long_one(self):\n"
+        + "".join(f"        step_{i} = {i}\n" for i in range(20))
+        + "        return 3\n",
+        encoding="utf-8",
+    )
+
+    scan = bootstrap.scan_repository(root)
+    texts = {f["path"]: f for f in scan["domains"]["(Wurzel)"]["files"]}
+
+    # Nur die lange Methode ist ein Kern-Symbol, nicht die zwei kurzen.
+    assert scan["domains"]["(Wurzel)"]["symbols"] == ["long_one"]
+    # Und nur sie ist lang genug für die Unwired-Prüfung.
+    assert [u["symbol"] for u in scan["unwired"]] == ["long_one"]
+    assert scan["unwired"][0]["lines"] == 22
+
+
+def test_multiline_decorator_counts_as_framework_binding(tmp_path):
+    """`@app.post(...)` über drei Zeilen: die Zeile über `def` ist `)`."""
+    root = tmp_path / "proj"
+    root.mkdir()
+    body = "".join(f"    line_{i} = {i}\n" for i in range(16))
+    (root / "api.py").write_text(
+        "app = object()\n\n"
+        "@app.post(\n"
+        '    "/api/run",\n'
+        "    response_model=dict,\n"
+        ")\n"
+        f"def run_endpoint():\n{body}    return True\n",
+        encoding="utf-8",
+    )
+
+    assert bootstrap.scan_repository(root)["unwired"] == []
+
+
+def test_subproject_is_marked_in_document(tmp_path):
+    """Ein Ordner mit eigenem project.godot ist eine Teilkopie, kein Teil des Ganzen."""
+    root = tmp_path / "proj"
+    (root / "games" / "dungeon").mkdir(parents=True)
+    (root / "games" / "dungeon" / "project.godot").write_text("config_version=5\n", encoding="utf-8")
+    (root / "games" / "dungeon" / "main.gd").write_text("func start() -> void:\n\tpass\n", encoding="utf-8")
+
+    scan = bootstrap.scan_repository(root)
+
+    assert scan["domains"]["games"]["subproject"] == "dungeon/project.godot"
+    document = bootstrap.generate_architecture_skeleton(scan)
+    assert "Sub-Projekt" in document
+    assert "dungeon/project.godot" in document

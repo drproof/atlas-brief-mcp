@@ -61,6 +61,52 @@ VIRTUAL_NAMES = {
 CORE_SYMBOL_MIN_LINES = 8
 
 
+def _func_body_end(lines: list[str], start: int) -> int:
+    """Letzte Zeile des Rumpfs, der in `start` beginnt (0-basiert).
+
+    Maßstab ist die Einrückung der **Definitionszeile**, nicht Spalte 0. Der
+    frühere Spalte-0-Test war nur für Top-Level-Code richtig: In einer
+    Python-Klasse steht keine Methode auf Spalte 0, also lief jede Methode bis
+    zum Ende der ganzen Klasse und galt als beliebig lang.
+    """
+    line = lines[start]
+    def_indent = len(line) - len(line.lstrip())
+    end = start
+    for offset in range(start + 1, len(lines)):
+        current = lines[offset]
+        if not current.strip():
+            continue
+        indent = len(current) - len(current.lstrip())
+        if indent <= def_indent:
+            # Die schließende Klammer einer TS/C#-Methode gehört noch dazu.
+            if current.strip() in ("}", "};", "});") and indent == def_indent:
+                end = offset
+            break
+        end = offset
+    return end
+
+
+def _has_decorator(lines: list[str], start: int) -> bool:
+    """Steht über der Definition ein Dekorator — auch ein mehrzeiliger?
+
+    `@app.post(\\n "/api",\\n)\\ndef handler():` — die Zeile direkt über `def`
+    ist `)`. Wer nur `lines[start-1]` prüft, hält den Endpunkt für unverdrahtet.
+    """
+    line = lines[start]
+    def_indent = len(line) - len(line.lstrip())
+    index = start - 1
+    while index >= 0:
+        current = lines[index]
+        if not current.strip():
+            return False  # Leerzeile trennt Dekorator und Definition
+        if current.lstrip().startswith("@"):
+            return True
+        if len(current) - len(current.lstrip()) < def_indent:
+            return False
+        index -= 1
+    return False
+
+
 def _core_symbols(text: str, limit: int = 12) -> list[str]:
     """Die größten Funktionen einer Datei — nicht die ersten.
 
@@ -76,15 +122,7 @@ def _core_symbols(text: str, limit: int = 12) -> list[str]:
         if name in VIRTUAL_NAMES:
             continue
         start = text.count("\n", 0, match.start())
-        end = start
-        for offset in range(start + 1, len(lines)):
-            # Alles, was auf Spalte 0 beginnt, beendet den Rumpf — ob neue
-            # Funktion oder Konstante. Die frühere Bedingung war invertiert und
-            # zählte jede Funktion bis zum Dateiende.lines[offset]
-            if lines[offset] and not lines[offset][0].isspace():
-                break
-            end = offset
-        length = max(1, end - start + 1)
+        length = _func_body_end(lines, start) - start + 1
         if length < CORE_SYMBOL_MIN_LINES:
             continue
         sized.append((length, name))
@@ -99,6 +137,36 @@ def _core_symbols(text: str, limit: int = 12) -> list[str]:
         if len(result) >= limit:
             break
     return result
+
+
+SUBPROJECT_MARKERS = (
+    "project.godot", "package.json", "Cargo.toml", "pyproject.toml",
+    "go.mod", "pom.xml", "build.gradle", ".git",
+)
+
+
+def _detect_subproject(domain_dir: Path) -> str:
+    """Trägt dieser Ordner ein eigenes Projekt? Dann ist er eine Teilkopie.
+
+    Ein Unterordner mit `project.godot`, `package.json` oder `.git` ist ein
+    eigenes Repository. Aufrufer außerhalb davon sind für den Scanner
+    unsichtbar — „unverdrahtet" ist dort eine schwächere Aussage, und das muss
+    in der Doku stehen, bevor jemand auf Verdacht löscht.
+    """
+    for marker in SUBPROJECT_MARKERS:
+        if (domain_dir / marker).exists():
+            return marker
+    # Eine Ebene tiefer: `games/dungeon_quest/project.godot`
+    try:
+        for child in domain_dir.iterdir():
+            if not child.is_dir():
+                continue
+            for marker in SUBPROJECT_MARKERS:
+                if (child / marker).exists():
+                    return f"{child.name}/{marker}"
+    except OSError:
+        pass
+    return ""
 
 
 def scan_repository(root: Path) -> dict:
@@ -118,7 +186,10 @@ def scan_repository(root: Path) -> dict:
 
         parts = Path(rel).parts
         domain = parts[0] if len(parts) > 1 else "(Wurzel)"
-        bucket = domains.setdefault(domain, {"files": [], "tokens": 0, "symbols": []})
+        bucket = domains.setdefault(
+            domain,
+            {"files": [], "tokens": 0, "symbols": [], "root": root / parts[0]},
+        )
         bucket["files"].append({"path": rel, "lines": len(text.splitlines()),
                                 "tokens": tokens})
         bucket["tokens"] += tokens
@@ -130,6 +201,7 @@ def scan_repository(root: Path) -> dict:
 
     for bucket in domains.values():
         bucket["files"].sort(key=lambda item: -item["tokens"])
+        bucket["subproject"] = _detect_subproject(bucket["root"])
         # Kern-Symbole aus den größten Dateien der Domäne, nicht aus den
         # erstbesten: In einer 60-Zeilen-Hilfsdatei steht kein Kern.
         texts = {rel: text for rel, text, _t in sources}
@@ -187,16 +259,11 @@ def _find_unwired(sources: list[tuple[str, str, int]]) -> list[dict]:
             if name.startswith("test_") or name.startswith("Test") or name.endswith("_test"):
                 continue
             start = text.count("\n", 0, match.start())
-            # Dekorator direkt über der Definition = an ein Framework gebunden.
-            if start > 0 and lines[start - 1].lstrip().startswith("@"):
+            # Dekorator über der Definition (auch mehrzeilig) = an ein Framework
+            # gebunden, kein fehlender Aufrufer.
+            if _has_decorator(lines, start):
                 continue
-            end = start
-            for offset in range(start + 1, len(lines)):
-                line = lines[offset]
-                if line and not line[0].isspace():
-                    break  # Spalte 0 = Rumpf zu Ende
-                end = offset
-            length = max(1, end - start + 1)
+            length = _func_body_end(lines, start) - start + 1
             if length < UNWIRED_MIN_LINES:
                 continue
             seen.add(name)
@@ -242,9 +309,11 @@ def generate_architecture_skeleton(scan: dict, project: str = "") -> str:
     for index, (domain, bucket) in enumerate(scan["domains"].items(), start=1):
         slug = _domain_slug(domain)
         files_count = len(bucket["files"])
+        subproject = bucket.get("subproject", "")
+        marker = f" · **Sub-Projekt** `{subproject}`" if subproject else ""
         lines.append(f"### 1.{index} {domain} — {files_count} "
                      f"{'Datei' if files_count == 1 else 'Dateien'}, "
-                     f"~{bucket['tokens']:,} Tokens  [{slug}]")
+                     f"~{bucket['tokens']:,} Tokens  [{slug}]{marker}")
         lines.append("")
         lines.append("Dateien (nach Größe):")
         lines.append("")

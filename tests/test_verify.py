@@ -213,3 +213,30 @@ def test_publish_switches_status_instead_of_appending(tmp_path, monkeypatch):
     assert calls, "set_status muss gerufen werden statt einer zweiten Zeile"
     assert result["reused_set_status"] is True
     assert result["changed"] is True
+
+
+def test_short_symbol_survives_substring_noise(tmp_path):
+    """`vault` ist definiert, auch wenn drei `can_vault_*` davor liegen."""
+    root = _project(tmp_path, (
+        "func can_vault_a() -> void:\n\tpass\n\n"
+        "func can_vault_b() -> void:\n\tpass\n\n"
+        "func can_vault_c() -> void:\n\tpass\n\n"
+        "func vault() -> void:\n\tpass\n\n"
+        "func use_it() -> void:\n\tvault()\n"
+    ))
+
+    result = verify.check(root, ["vault"])
+
+    assert result["ok"] is True, result
+    assert result["symbols"][0]["defined"] is True
+
+
+def test_dead_class_does_not_pass_the_gate(tmp_path):
+    """`class_name Foo` deklariert die Klasse, es benutzt sie nicht."""
+    root = _project(tmp_path, "class_name LonelyClass\n\nextends Node\n")
+
+    result = verify.check(root, ["LonelyClass"])
+
+    assert result["symbols"][0]["calls"] == 0
+    assert result["symbols"][0]["refs"] == 0
+    assert result["ok"] is False

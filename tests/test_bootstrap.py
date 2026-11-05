@@ -397,3 +397,22 @@ def test_entry_file_export_default_is_not_unwired(tmp_path):
     unwired = {item["symbol"] for item in bootstrap.scan_repository(root)["unwired"]}
 
     assert "Dashboard" not in unwired
+
+
+def test_multiline_signature_has_correct_body_length(tmp_path):
+    """`): RevenueResult {` auf Spalte 0 beendet den Rumpf NICHT."""
+    source = (
+        "export function calculateRevenue(\n"
+        "  studio: StudioData,\n"
+        "  year: number,\n"
+        "): RevenueResult {\n"
+        + "".join(f"  const step_{i} = {i};\n" for i in range(12))
+        + "  return { total: 0 };\n"
+        "}\n"
+    )
+    lines = source.splitlines()
+    start = 0
+    end = bootstrap._func_body_end(lines, start)
+
+    assert end == len(lines) - 1, f"Rumpf endet bei {end}, erwartet {len(lines) - 1}"
+    assert end - start + 1 == 18  # 4 Signaturzeilen + 12 Rumpf + return + }

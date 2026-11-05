@@ -371,6 +371,18 @@ def publish(
 
     document_id = target["source"]["id"]
     gdocs.assert_writable(conn, document_id)
+
+    # Zweite Sperre — diesmal gegen das LIVE-Dokument, nicht gegen den Index.
+    # Der Index kann hinterherhinken (Drive-Export, siehe `index_lag`), das
+    # Dokument nicht. Ohne diese Prüfung hängt ein zweiter `publish` im
+    # Lag-Fenster eine zweite Zeile an dieselbe Work Order.
+    live_text = "\n".join(
+        tab_text(body) for _tid, _title, body in iter_tab_bodies(target["document"])
+    )
+    if _status_line_re(int(wo)).search(live_text):
+        return set_status(root, conn, wo, status=status, dry_run=dry_run,
+                          client_secret=client_secret, verify_symbols=verify_symbols)
+
     revision = target["document"].get("revisionId", "")
     payload = {
         "document_id": document_id,
@@ -434,6 +446,12 @@ def publish(
     if verified and int(wo) not in listed:
         # Das Dokument hat die Zeile, der Index noch nicht: der Export lag.
         payload["index_lag"] = True
+        # Der Drive-Export hinkt: `sync` hat den ALTEN Text in den Cache
+        # geschrieben, aber die NEUE modifiedTime vermerkt. Ohne diesen Schritt
+        # hielte jeder spätere auto_sync das Dokument für unverändert und die
+        # Zeile bliebe dauerhaft unsichtbar.
+        from .indexer import invalidate_sync_state
+        invalidate_sync_state(conn, document_id)
         payload["warning"] = (
             "Zeile steht im Dokument, ist aber noch nicht im Suchindex "
             "(Drive-Export hinkt nach). `atlas status` zeigt sie gleich."
@@ -450,6 +468,17 @@ def publish(
 
 
 SEPARATORS = ["—", "–", "-", ":"]
+
+
+def _status_line_re(wo: int):
+    """Eine Statuszeile für diese Work Order — nicht jede Erwähnung.
+
+    "Work Order 9 Sync (Tab 1): …" ist keine Statuszeile, "Work Order 9 — ✅ …"
+    schon. Der Trenner direkt nach der Nummer ist das Unterscheidungsmerkmal.
+    """
+    separators = "|".join(re.escape(item) for item in SEPARATORS)
+    return re.compile(rf"(?m)^\s*Work Order\s*{int(wo)}\s*(?:{separators})",
+                      re.IGNORECASE)
 
 
 def set_status(

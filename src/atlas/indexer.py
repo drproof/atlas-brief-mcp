@@ -332,6 +332,18 @@ def get_sync_state(conn: sqlite3.Connection, drive_id: str):
     ).fetchone()
 
 
+def invalidate_sync_state(conn: sqlite3.Connection, drive_id: str) -> None:
+    """Vergisst den Sync-Stand eines Dokuments.
+
+    Nötig, wenn der Drive-Export dem Schreibvorgang nachhinkt: `sync` hat dann
+    den alten Text in den Cache geschrieben, aber die neue `modifiedTime` in
+    `sync_state` vermerkt. Der nächste `auto_sync` hielte das Dokument für
+    unverändert und die neue Zeile bliebe dauerhaft unsichtbar.
+    """
+    conn.execute("DELETE FROM sync_state WHERE drive_id = ?", (drive_id,))
+    conn.commit()
+
+
 def set_sync_state(
     conn: sqlite3.Connection,
     drive_id: str,

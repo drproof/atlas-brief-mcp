@@ -144,7 +144,7 @@ def load_credentials(interactive: bool = False, client_secret: str | None = None
 
 
 def _save(creds) -> None:
-    GLOBAL_DIR.mkdir(parents=True, exist_ok=True)
+    TOKEN_PATH.parent.mkdir(parents=True, exist_ok=True)
     TOKEN_PATH.write_text(creds.to_json(), encoding="utf-8")
     try:
         os.chmod(TOKEN_PATH, 0o600)

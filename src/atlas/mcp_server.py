@@ -415,10 +415,12 @@ def atlas_lint() -> str:
 
     Nutze das, bevor du das GDD umstrukturierst — oder nach einem Agenten-Lauf.
     """
-    from . import lint as lint_mod
+    from . import bootstrap, lint as lint_mod
 
-    _, conn = _fresh()
-    return lint_mod.lint(conn)
+    root, conn = _fresh()
+    # Ohne managed-Liste gilt alles als verwaltet — das ist der Altvertrag und
+    # für Google-Docs-Projekte richtig. Mit Liste zählt nur atlas-eigene Doku.
+    return lint_mod.lint(conn, managed=bootstrap.load_managed(root))
 
 
 @mcp.tool()

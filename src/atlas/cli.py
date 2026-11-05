@@ -437,16 +437,18 @@ def main(argv: list[str] | None = None) -> int:
             return 0
 
         indexed = refresh(conn, root, force=True)
-        lint_result = json.loads(lint_mod.lint(conn))
+        # Nach dem Schreiben von managed.json mit Scope linten: sonst bricht
+        # `init` in jedem Repo mit Alt-Doku an fremden Formbefunden ab.
+        lint_result = json.loads(lint_mod.lint(conn, managed=bootstrap.load_managed(root)))
         report["indexed"] = indexed.get("sections", indexed)
         report["lint"] = {
             "sections": lint_result.get("sections"),
-            "issues": len(lint_result.get("issues") or []),
+            "issues": lint_result.get("managed_issues", 0),
+            "discovered": lint_result.get("discovered_issues", 0),
         }
         print(json.dumps(report, ensure_ascii=False, indent=2))
-        # 0 nur, wenn das erzeugte Dokument lint-sauber ist — sonst ist die
-        # Ersterfassung kaputt und der Aufrufer soll es merken.
-        return 0 if report["lint"]["issues"] == 0 else 1
+        # 0 nur, wenn die atlas-eigenen Dokumente sauber sind.
+        return 0 if lint_result.get("ok") else 1
     elif args.command == "where":
         _emit(search_mod.where(conn, args.topic), as_json)
     elif args.command == "search":

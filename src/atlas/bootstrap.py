@@ -133,9 +133,16 @@ def _func_body_end(lines: list[str], start: int) -> int:
         if not current.strip():
             continue
         indent = len(current) - len(current.lstrip())
+        stripped = current.strip()
         if indent <= def_indent:
+            # Fortsetzung einer mehrzeiligen Signatur — erst danach beginnt der
+            # Rumpf. `): RevenueResult {`, `) -> dict:`, `) => {`, oder Allman-
+            # Stil mit `{` auf eigener Zeile.
+            if stripped.startswith(")") or stripped in ("{", "):"):
+                end = offset
+                continue
             # Die schließende Klammer einer TS/C#-Methode gehört noch dazu.
-            if current.strip() in ("}", "};", "});") and indent == def_indent:
+            if stripped in ("}", "};", "});") and indent == def_indent:
                 end = offset
             break
         end = offset

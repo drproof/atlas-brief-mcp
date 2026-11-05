@@ -68,7 +68,7 @@ def _read(path: Path) -> str:
         return ""
 
 
-def find(root, symbol: str, limit: int = 20) -> list[dict]:
+def find(root, symbol: str, limit: int = 20, exact: bool = False) -> list[dict]:
     """Definitionen, deren Name den Suchbegriff enthält (case-insensitiv)."""
     needle = symbol.strip().lower()
     if not needle:
@@ -84,7 +84,14 @@ def find(root, symbol: str, limit: int = 20) -> list[dict]:
 
         rel = path.relative_to(root).as_posix()
         for match in FUNC_RE.finditer(text):
-            if needle not in match.group("name").lower():
+            name = match.group("name")
+            if needle not in name.lower():
+                continue
+            # `exact` ist für das Anbindungs-Gate: Dort zählt nur die
+            # Definition mit genau diesem Namen. Ohne den Filter frisst
+            # `limit` die Substring-Treffer (can_vault_a/b/c) und die echte
+            # `func vault()` liegt hinter dem Abbruch.
+            if exact and name != symbol:
                 continue
             hits.append({
                 "path": rel,
@@ -94,7 +101,10 @@ def find(root, symbol: str, limit: int = 20) -> list[dict]:
                 "signature": match.group("signature").strip(),
             })
         for match in CLASS_RE.finditer(text):
-            if needle not in match.group("name").lower():
+            name = match.group("name")
+            if needle not in name.lower():
+                continue
+            if exact and name != symbol:
                 continue
             hits.append({
                 "path": rel,
@@ -156,6 +166,11 @@ def references(root, symbol: str, limit: int = 20) -> dict:
                 continue
             decl_match = SIGNAL_DECL_RE.match(line)
             if decl_match and decl_match.group("name") == needle:
+                continue
+            # `class_name Foo` deklariert die Klasse — es benutzt sie nicht.
+            # Ohne diese Zeile besteht jede tote Klasse das Anbindungs-Gate.
+            class_match = CLASS_RE.match(line)
+            if class_match and class_match.group("name") == needle:
                 continue
 
             entry = {"path": rel, "line": number, "text": stripped[:160]}

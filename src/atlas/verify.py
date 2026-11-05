@@ -64,7 +64,9 @@ def check(root, symbols: list[str]) -> dict:
         symbol = str(raw).strip()
         if not symbol:
             continue
-        definitions = code.find(root, symbol, limit=3)
+        # exact=True: sonst frisst `limit` die Substring-Treffer und die echte
+        # Definition liegt hinter dem Abbruch (can_vault_a/b/c vor `func vault()`).
+        definitions = code.find(root, symbol, limit=3, exact=True)
         # Exakter Treffer, nicht Substring: `vault` soll nicht `can_vault` bestätigen.
         exact = [d for d in definitions if d["symbol"] == symbol]
         usage = code.references(root, symbol, limit=3)

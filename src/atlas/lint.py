@@ -11,7 +11,11 @@ import re
 import sqlite3
 
 LINE_WO_RE = re.compile(r"Work\s*Order\s*(\d+)", re.IGNORECASE)
-STATUS_RE = re.compile(r"✅|⬜|☑|☐|ERLEDIGT|OFFEN", re.IGNORECASE)
+# Dieselben Marker, die `status.py` als Status erkennt. Fehlten hier `DONE`/
+# `TODO`/`OPEN`, meldete lint eine Zeile als "ohne Status", die status.py sehr
+# wohl als erledigt liest.
+STATUS_RE = re.compile(r"✅|⬜|☑|☐|ERLEDIGT|OFFEN|\bDONE\b|\bTODO\b|\bOPEN\b",
+                       re.IGNORECASE)
 ESCAPED_RE = re.compile(r"\\[.\-_*\[\]#!|>~]")
 
 MAX_ISSUES = 200

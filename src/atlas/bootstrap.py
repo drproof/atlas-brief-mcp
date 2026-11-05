@@ -32,7 +32,7 @@ def estimate_tokens(text: str) -> int:
     return round(len(text) / TOKENS_PER_CHAR)
 
 
-def _iter_sources(root: Path):
+def iter_source_files(root: Path):
     """Quelldateien, ohne in gesperrte oder riesige Ordner abzusteigen.
 
     Bewusst `os.walk` statt `rglob`: `rglob` wirft bei einem einzigen
@@ -234,7 +234,7 @@ def scan_repository(root: Path) -> dict:
     sources: list[tuple[str, str, int]] = []  # (rel, text, tokens)
     domains: dict[str, dict] = {}
 
-    for path in sorted(_iter_sources(root)):
+    for path in sorted(iter_source_files(root)):
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:

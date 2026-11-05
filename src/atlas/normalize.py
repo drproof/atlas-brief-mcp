@@ -70,7 +70,18 @@ def aliases() -> dict[str, list[str]]:
 TOKEN_RE = re.compile(r"[A-Za-z0-9ÄÖÜäöüß_]+(?:-[A-Za-z0-9]+)*")
 
 # Frage- und Füllwörter, die in GDDs praktisch nie als Suchbegriff taugen.
+# Deutsch **und** Englisch: Agenten fragen oft englisch ("where is the combat
+# system described?"), und dann blieben `where`, `the`, `described` als
+# Suchterme stehen und verwaesserten das BM25-Ranking.
 STOPWORDS = {
+    # Englisch
+    "where", "what", "when", "which", "who", "whom", "whose", "why", "how",
+    "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
+    "in", "of", "to", "for", "with", "on", "at", "by", "from", "into",
+    "and", "or", "but", "not", "no", "does", "do", "did", "can", "could",
+    "find", "locate", "located", "defined", "described", "describe",
+    "documented", "docs", "document", "section", "please", "show", "tell",
+    "there", "it", "its", "this", "that", "these", "those", "about",
     "wo", "finde", "findet", "finden", "ich", "du", "man", "es", "sich",
     "das", "der", "die", "den", "dem", "des", "ein", "eine", "einen", "einem", "einer",
     "und", "oder", "aber", "auch", "noch", "nur", "so", "wie", "was", "wer", "wann", "warum",

@@ -166,3 +166,57 @@ def test_definition_and_comment_are_not_usage(tmp_path):
     refs = code.references(root, "swap_positions_with_ally")
     assert refs["call_count"] == 0
     assert refs["ref_count"] == 0
+
+
+# --------------------------------------------------------------------------
+# Sprach-Paritaet: dieselben Muster wie `atlas init`
+# --------------------------------------------------------------------------
+
+def test_finds_python_function(tmp_path):
+    root = tmp_path / "py"
+    (root / "backend").mkdir(parents=True)
+    (root / "backend" / "server.py").write_text(
+        "def run_godot_headless(project: str, timeout: int = 30) -> dict:\n"
+        "    return {}\n\n"
+        "def caller():\n"
+        "    run_godot_headless('x')\n",
+        encoding="utf-8",
+    )
+
+    hits = code.find(root, "run_godot_headless")
+
+    assert len(hits) == 1
+    assert hits[0]["path"] == "backend/server.py"
+    assert hits[0]["signature"] == "def run_godot_headless(project: str, timeout: int = 30) -> dict"
+
+
+def test_finds_typescript_arrow_function(tmp_path):
+    root = tmp_path / "ts"
+    (root / "src").mkdir(parents=True)
+    (root / "src" / "api.ts").write_text(
+        "export const fetchTasks = async (limit: number) => {\n"
+        "  return [];\n"
+        "};\n",
+        encoding="utf-8",
+    )
+
+    hits = code.find(root, "fetchTasks")
+
+    assert len(hits) == 1
+    assert hits[0]["symbol"] == "fetchTasks"
+
+
+def test_python_definition_is_not_counted_as_reference(tmp_path):
+    """Die `def`-Zeile ist keine Benutzung — sonst besteht jedes Symbol das Gate."""
+    root = tmp_path / "py"
+    (root / "mod").mkdir(parents=True)
+    (root / "mod" / "lonely.py").write_text(
+        "def never_called_anywhere():\n"
+        "    return 1\n",
+        encoding="utf-8",
+    )
+
+    result = code.references(root, "never_called_anywhere")
+
+    assert result["call_count"] == 0
+    assert result["ref_count"] == 0

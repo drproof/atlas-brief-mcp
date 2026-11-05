@@ -204,7 +204,7 @@ und weiß dadurch, dass Doku-Fragen über `atlas_where` laufen — nicht über
 ## Tests
 
 ```bash
-uv run pytest -q      # 155 Tests, keine Netzwerkzugriffe
+uv run pytest -q      # 187 Tests, keine Netzwerkzugriffe
 uv run python scripts/smoke_mcp.py --root examples/demo   # JSON-RPC-Smoke: 15 Tools
 ```
 

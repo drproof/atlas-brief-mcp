@@ -25,13 +25,25 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
+# Eine Quelle der Wahrheit für "was ist eine Funktionsdefinition": `atlas init`
+# und die Symbolsuche müssen dieselben Sprachen sehen. Sonst schreibt `init`
+# eine AGENTS.md, die `atlas_code_find` empfiehlt, und das Gate findet im
+# Python- oder TS-Projekt nichts.
+from .bootstrap import DEF_PATTERNS, SKIP_KEYWORDS, iter_source_files
+
 FUNC_RE = re.compile(
     # Ganze Signatur bis zum abschließenden ':' — inklusive 'static' und '-> Typ'.
     r"^[ \t]*(?P<signature>(?:static[ \t]+)?func[ \t]+(?P<name>[A-Za-z_]\w*)"
     r"[ \t]*\((?P<args>[^)]*)\)[^\n:]*)",
     re.MULTILINE,
 )
-CLASS_RE = re.compile(r"^class_name[ \t]+(?P<name>[A-Za-z_]\w*)", re.MULTILINE)
+# GDScript `class_name Foo`, Python/TS/Java/C# `class Foo` / `export class Foo`.
+CLASS_RE = re.compile(
+    r"^[ \t]*(?:class_name[ \t]+"
+    r"|(?:export[ \t]+)?(?:default[ \t]+)?(?:abstract[ \t]+)?class[ \t]+)"
+    r"(?P<name>[A-Za-z_]\w*)",
+    re.MULTILINE,
+)
 # Zeilen, die das Symbol *definieren* statt es zu benutzen.
 DEF_LINE_RE = re.compile(r"^[ \t]*(?:static[ \t]+)?func[ \t]+(?P<name>[A-Za-z_]\w*)")
 SIGNAL_DECL_RE = re.compile(r"^[ \t]*signal[ \t]+(?P<name>[A-Za-z_]\w*)")
@@ -44,21 +56,18 @@ SKIP_DIRS = {
 }
 
 
-def _iter_sources(root: Path):
-    """Definitionen: nur GDScript."""
-    for path in sorted(root.rglob("*.gd")):
+def _iter_all_sources(root: Path):
+    """Definitionen **und** Referenzen: alle Quellsprachen plus Godot-Szenen.
+
+    `.tscn` enthält keinen Code, aber die Bindung — `[connection method=...]` ist
+    die einzige Spur eines Signal-Handlers.
+    """
+    for path in iter_source_files(root):
+        yield path
+    for path in sorted(root.rglob("*.tscn")):
         if any(part in SKIP_DIRS for part in path.parts):
             continue
         yield path
-
-
-def _iter_all_sources(root: Path):
-    """Referenzen: GDScript **und** Szenen — dort steht kein Code, aber die Bindung."""
-    for pattern in ("*.gd", "*.tscn"):
-        for path in sorted(root.rglob(pattern)):
-            if any(part in SKIP_DIRS for part in path.parts):
-                continue
-            yield path
 
 
 def _read(path: Path) -> str:
@@ -69,37 +78,46 @@ def _read(path: Path) -> str:
 
 
 def find(root, symbol: str, limit: int = 20, exact: bool = False) -> list[dict]:
-    """Definitionen, deren Name den Suchbegriff enthält (case-insensitiv)."""
+    """Definitionen, deren Name den Suchbegriff enthält (case-insensitiv).
+
+    `exact=True` für das Anbindungs-Gate: Dort zählt nur die Definition mit
+    genau diesem Namen. Ohne den Filter frisst `limit` die Substring-Treffer
+    (`can_vault_a/b/c`) und die echte `func vault()` liegt hinter dem Abbruch.
+    """
     needle = symbol.strip().lower()
     if not needle:
         return []
 
     hits: list[dict] = []
-    for path in _iter_sources(Path(root)):
+    for path in iter_source_files(root):
         text = _read(path)
         # Substring-Test ist um Größenordnungen billiger als zwei Regex-Läufe
         # über jede Datei.
         if needle not in text.lower():
             continue
-
         rel = path.relative_to(root).as_posix()
-        for match in FUNC_RE.finditer(text):
-            name = match.group("name")
-            if needle not in name.lower():
-                continue
-            # `exact` ist für das Anbindungs-Gate: Dort zählt nur die
-            # Definition mit genau diesem Namen. Ohne den Filter frisst
-            # `limit` die Substring-Treffer (can_vault_a/b/c) und die echte
-            # `func vault()` liegt hinter dem Abbruch.
-            if exact and name != symbol:
-                continue
-            hits.append({
-                "path": rel,
-                "line": text.count("\n", 0, match.start()) + 1,
-                "kind": "func",
-                "symbol": match.group("name"),
-                "signature": match.group("signature").strip(),
-            })
+        for pattern in DEF_PATTERNS:
+            for match in pattern.finditer(text):
+                name = match.group("name")
+                if not name or name in SKIP_KEYWORDS:
+                    continue
+                if needle not in name.lower():
+                    continue
+                if exact and name != symbol:
+                    continue
+                line_start = text.rfind("\n", 0, match.start()) + 1
+                line_end = text.find("\n", match.start())
+                raw_line = text[line_start: line_end if line_end != -1 else len(text)]
+                hits.append({
+                    "path": rel,
+                    "line": text.count("\n", 0, match.start()) + 1,
+                    "kind": "func",
+                    "symbol": name,
+                    # Ohne abschließenden Doppelpunkt/Klammer: die Signatur,
+                    # nicht die Zeile. Gilt für `func f():`, `def f():` und
+                    # `function f() {`.
+                    "signature": raw_line.strip().rstrip(":{").strip(),
+                })
         for match in CLASS_RE.finditer(text):
             name = match.group("name")
             if needle not in name.lower():
@@ -110,13 +128,24 @@ def find(root, symbol: str, limit: int = 20, exact: bool = False) -> list[dict]:
                 "path": rel,
                 "line": text.count("\n", 0, match.start()) + 1,
                 "kind": "class",
-                "symbol": match.group("name"),
-                "signature": f"class_name {match.group('name')}",
+                "symbol": name,
+                "signature": text[text.rfind("\n", 0, match.start()) + 1:
+                                  text.find("\n", match.start())].strip().rstrip(":{").strip(),
             })
         if len(hits) >= limit:
             break
 
     return hits[:limit]
+
+
+def _is_definition_line(line: str, needle: str) -> bool:
+    """Definiert diese Zeile das Symbol? Dann ist sie keine Benutzung."""
+    for pattern in DEF_PATTERNS:
+        match = pattern.match(line)
+        if match and match.group("name") == needle:
+            return True
+    match = CLASS_RE.match(line)
+    return bool(match and match.group("name") == needle)
 
 
 def references(root, symbol: str, limit: int = 20) -> dict:
@@ -160,9 +189,9 @@ def references(root, symbol: str, limit: int = 20) -> dict:
             stripped = line.strip()
             if stripped.startswith("#"):
                 continue
-            # Die Definitionszeile selbst ist keine Benutzung.
-            def_match = DEF_LINE_RE.match(line)
-            if def_match and def_match.group("name") == needle:
+            # Die Definitionszeile selbst ist keine Benutzung — in jeder
+            # Sprache, nicht nur bei `func`.
+            if _is_definition_line(line, needle):
                 continue
             decl_match = SIGNAL_DECL_RE.match(line)
             if decl_match and decl_match.group("name") == needle:

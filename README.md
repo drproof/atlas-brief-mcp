@@ -2,31 +2,31 @@
 
 Project documentation as an index, not as context fuel.
 
-A local MCP server for coding agents. Ask "where is the combat system
-described?" and get back **file, line and anchor** — not 40,000 tokens of
-document you have to read, pay for, and mostly ignore.
-
-Works with any folder of Markdown. Optionally indexes Google Docs & Sheets
-when that is where your documentation lives.
-
-Born in a large game project, built for any codebase where specs, ADRs or
-architecture docs outgrow the context window.
+A local MCP server for coding agents. Ask "where is the damage model
+described?" and get back a file, a line and an anchor — not 40,000 tokens of
+document you have to read, pay for and mostly ignore.
 
 ```
 Without atlas:  read the whole doc        20,364 tokens
 With atlas:     atlas_where → atlas_read    875 tokens   (−96%)
 ```
 
+It exists because of a specific failure. An agent implemented 1,070 lines,
+forgot the one dispatcher call that made them reachable, and reported "done".
+The next cleanup run saw an unused-function warning and deleted all of it —
+the lines were never committed, so nothing could be recovered. Nobody had
+asked the question atlas now asks before every checkoff: **is this actually
+wired up?**
+
+Works with any folder of Markdown — born in a large game project, built for any
+codebase where specs, ADRs or architecture docs outgrow the context window.
+
 ---
 
-## The problem it actually solves
+## The refusal
 
-An agent implemented 1,070 lines, forgot the single dispatcher call, and
-reported "done". The next cleanup run saw an unused-function warning and
-deleted all of it. The work was gone — because nobody noticed that a
-function without a caller is not a feature.
-
-`atlas` refuses that acceptance:
+That failure has a shape, and the tool answers it with a refusal instead of a
+warning nobody reads:
 
 ```json
 {

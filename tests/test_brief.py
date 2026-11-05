@@ -49,7 +49,7 @@ def test_brief_contains_publish_command_for_work_order(conn, tmp_path):
     text = brief.build(conn, tmp_path, "Kampfsystem", work_order=12)
     assert "atlas publish --wo 12" in text
     assert "verified: true" in text
-    assert "Abschluss" in text
+    assert "Closing" in text
 
 
 def test_brief_without_work_order_mentions_placeholder(conn, tmp_path):

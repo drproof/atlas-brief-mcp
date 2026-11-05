@@ -145,73 +145,73 @@ def build(
                 files.append(item)
 
     lines: list[str] = [
-        f"# Task-Brief: {goal}",
+        f"# Task brief: {goal}",
         "",
-        f"_Erzeugt aus dem GDD-Index am {date.today().isoformat()}. "
-        f"Anker sind stabil — mit `atlas_read(<anker>)` jederzeit nachlesbar._",
+        f"_Generated from the documentation index on {date.today().isoformat()}. "
+        f"Anchors are stable — re-read them any time with `atlas_read(<anchor>)`._",
         "",
-        f"## 1. Relevante GDD-Abschnitte ({len(sections)})",
+        f"## 1. Relevant sections ({len(sections)})",
         "",
     ]
     if sections:
         lines.extend(sections)
     else:
         lines.append(
-            "_Kein Treffer im GDD. Prüfe die Formulierung oder nutze `atlas_outline`._\n"
+            "_No match in the documentation. Try different wording, or use `atlas_outline`._\n"
         )
 
-    lines.extend(["## 2. Betroffene Dateien", ""])
+    lines.extend(["## 2. Affected files", ""])
     if files:
         lines.extend(f"- `{item}`" for item in files)
     else:
-        lines.append("_Keine `implements:`-Zuordnung im GDD hinterlegt — im Code selbst suchen._")
+        lines.append("_No `implements:` mapping in the docs — search the code yourself._")
     lines.append("")
 
     if include_rules:
         rules = _load_rules(root)
         if rules:
-            lines.extend(["## 3. Leitplanken (unverändert gültig)", "", rules, ""])
+            lines.extend(["## 3. Guardrails (still in force)", "", rules, ""])
 
     lines.extend([
-        "## 4. Arbeitsauftrag",
+        "## 4. Work order",
         "",
-        "- [ ] Ziel in prüfbare Schritte zerlegen",
-        "- [ ] Betroffene Dateien aus Abschnitt 2 zuerst lesen",
-        "- [ ] Nach der Änderung verifizieren (Test/Start), Ergebnis zitieren",
+        "- [ ] Break the goal into checkable steps",
+        "- [ ] Read the affected files from section 2 first",
+        "- [ ] Verify after the change (test/run) and quote the result",
         "",
     ])
 
     if work_order:
         lines.extend([
-            f"## 5. Abschluss (Pflicht — Work Order {work_order})",
+            f"## 5. Closing (mandatory — work order {work_order})",
             "",
-            "Status ins Google Doc eintragen. **Nicht** selbst ins Doc schreiben:",
+            "Record the status through the tool. Do **not** edit the document yourself:",
             "",
             "```",
-            f'atlas publish --wo {work_order} --title "<Titel>" '
-            '--desc "<ein Satz: was implementiert wurde>"',
+            f'atlas publish --wo {work_order} --title "<title>" '
+            '--desc "<one sentence: what was implemented>"',
             "```",
             "",
-            "`verified: true` in der Antwort ist der Nachweis. Fehlt das Feld,",
-            "ist die Aufgabe **nicht** dokumentiert — auch wenn der Code fertig ist.",
+            "`verified: true` in the response is the proof. If the field is missing,",
+            "the task is **not** documented — even if the code is finished.",
             "",
         ])
     else:
         lines.extend([
-            "## 5. Abschluss",
+            "## 5. Closing",
             "",
-            "Status ins Doc eintragen (MCP: `atlas_publish`, CLI: `atlas publish --wo <N> …`).",
-            "**Nicht** selbst ins Doc schreiben. `verified: true` ist der Nachweis.",
+            "Record the status through the tool (MCP: `atlas_publish`, CLI: `atlas publish --wo <N> …`).",
+            "Do **not** edit the document yourself. `verified: true` is the proof.",
             "",
         ])
 
     lines.extend([
-        "> Bei Unklarheiten den Anker aus Abschnitt 1 mit `atlas_read` nachlesen,",
-        "> statt die GDD-Datei vollständig zu öffnen.",
+        "> If anything is unclear, re-read the anchor from section 1 with `atlas_read`",
+        "> instead of opening the whole documentation file.",
         "",
     ])
 
     text = "\n".join(lines)
     if len(text) > max_chars * 2:
-        text = text[: max_chars * 2].rstrip() + "\n\n_… Brief gekürzt._\n"
+        text = text[: max_chars * 2].rstrip() + "\n\n_… brief truncated._\n"
     return text

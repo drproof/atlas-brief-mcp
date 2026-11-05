@@ -7,15 +7,15 @@ tags: [vision, pillars]
 
 # Frosthafen
 
-Aufbau-Survival in einer arktischen Siedlung. Der Spieler verwaltet Vorräte,
-Wärme und Moral einer Gemeinschaft aus 40 Überlebenden.
+Base-building survival in an arctic settlement. The player manages supplies,
+warmth and morale for a community of 40 survivors.
 
-## Säulen
+## Pillars
 
-- **Wärme als Währung.** Jede Entscheidung kostet Brennstoff.
-- **Soziale Schuld.** Wer half, darf später fordern.
-- **Kein Reset.** Verlorene Bewohner bleiben verloren.
+- **Warmth as currency.** Every decision costs fuel.
+- **Social debt.** Whoever helped may call in the favour later.
+- **No reset.** Lost settlers stay lost.
 
-## Zielgruppe
+## Audience
 
-Spieler, die Aufbau ohne Hektik mögen, aber Konsequenzen wollen.
+Players who like building without hurry, but want consequences.

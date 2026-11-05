@@ -41,6 +41,30 @@ when it blocks. It has caught this exact class of mistake twice in real use.
 
 ---
 
+## Context that survives the chat
+
+Every new agent session starts blind. It re-reads the repository, re-discovers
+where things live, re-derives what the current state is — and when the context
+window fills up, the next session starts over. The map lives in the
+conversation, and conversations are disposable.
+
+`atlas` moves the map next to the code:
+
+- `atlas_where` answers "where is this documented" in one call — for any fresh chat
+- `atlas_status` says which work orders are done, so the checklist survives the session
+- `atlas init` writes the architecture down once instead of re-deriving it every week
+- `atlas_set_status` records the outcome in the document, not in the transcript
+
+That changes how you work: you can close a chat mid-task and open a new one. The
+next one asks the same three questions and is up to speed in three tool calls,
+without reading a single file end to end.
+
+**What it does not know** is what you *discussed*. A decision that was never
+written down is gone — which is the same rule as before, just applied to
+conversations: if it matters, it belongs in the document.
+
+---
+
 ## Install
 
 Requires Python 3.10+ and [uv](https://docs.astral.sh/uv/) (or pipx).

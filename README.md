@@ -9,6 +9,9 @@ document you have to read, pay for, and mostly ignore.
 Works with any folder of Markdown. Optionally indexes Google Docs & Sheets
 when that is where your documentation lives.
 
+Born in a large game project, built for any codebase where specs, ADRs or
+architecture docs outgrow the context window.
+
 ```
 Without atlas:  read the whole doc        20,364 tokens
 With atlas:     atlas_where → atlas_read    875 tokens   (−96%)
@@ -63,7 +66,7 @@ If `atlas` is not found afterwards, `uv tool` put it in `~/.local/bin`
 Verify:
 
 ```bash
-atlas --help          # 22 subcommands
+atlas --help          # 23 subcommands
 ```
 
 No Google account, no API key, no network access is needed for any of this.
@@ -292,7 +295,7 @@ files) — measured the same way:
 ## Tests
 
 ```bash
-uv run pytest -q      # 197 tests, no network access
+uv run pytest -q      # 209 tests, no network access
 uv run python scripts/smoke_mcp.py --root examples/demo   # JSON-RPC smoke: 15 tools
 ```
 

@@ -31,9 +31,15 @@ def main() -> int:
     parser.add_argument("--root", required=True)
     args = parser.parse_args()
 
-    python = ROOT / ".venv" / "Scripts" / "python.exe"
-    if not python.exists():
-        python = ROOT / ".venv" / "bin" / "python"
+    # Derselbe Interpreter, der dieses Skript startet. Der hartkodierte
+    # .venv-Pfad brach in jeder Umgebung ohne venv (CI: pip install, dann
+    # FileNotFoundError auf .venv/bin/python).
+    python = Path(sys.executable)
+    for candidate in (ROOT / ".venv" / "Scripts" / "python.exe",
+                      ROOT / ".venv" / "bin" / "python"):
+        if candidate.exists():
+            python = candidate
+            break
 
     proc = subprocess.Popen(
         [str(python), "-m", "atlas", "serve", "--root", args.root],

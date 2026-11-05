@@ -113,3 +113,21 @@ def test_ten_work_orders_get_half_penalty(tmp_path):
     conn = _log_project(tmp_path, "Nachtrag", 10)
 
     assert _penalty_for(conn, "Nachtrag") == 0.5
+
+
+def test_a_section_named_work_orders_is_still_a_logbook(tmp_path):
+    """Der Rueckfall: "Work Orders" ist der uebliche Name eines Logbuchs.
+
+    Ein Heading-Hint fuer "work orders" haette die Anzahl-Regel ausgehebelt —
+    dann gewinnt das Logbuch wieder jede Systemfrage, weil der Score-Malus nie
+    greift.
+    """
+    conn = _log_project(tmp_path, "Work Orders", 20)
+
+    assert _penalty_for(conn, "Work Orders") == 0.25
+
+
+def test_a_section_named_status_is_still_a_logbook(tmp_path):
+    conn = _log_project(tmp_path, "Status", 20)
+
+    assert _penalty_for(conn, "Status") == 0.25

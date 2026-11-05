@@ -154,8 +154,12 @@ LOG_MIN_LINES = 8
 LOG_HARD_LINES = 16
 # Überschriften, die eine Übersicht ankündigen — nie ein Logbuch, egal wie
 # viele Work Orders darunter stehen.
-LOG_HEADING_HINTS = ("plan", "meilenstein", "roadmap", "übersicht", "fahrplan",
-                     "backlog", "statusübersicht")
+# Ueberschriften, die eine Uebersicht ANKUENDIGEN. Bewusst ohne "work orders"
+# und "status": genau so heisst das Logbuch in den meisten Projekten, und der
+# Hint haette die Anzahl-Regel darunter ausgehebelt — ein 30-Zeilen-Logbuch
+# haette dann wieder jede Systemfrage gewonnen.
+LOG_HEADING_HINTS = ("plan", "meilenstein", "milestone", "roadmap", "übersicht",
+                     "overview", "fahrplan", "backlog", "statusübersicht")
 
 
 def _log_penalty(conn: sqlite3.Connection, rows) -> dict[tuple[str, str], float]:
@@ -229,7 +233,7 @@ def where(conn: sqlite3.Connection, topic: str, max_chars: int = 400) -> str:
     if not hits:
         payload = {
             "found": False,
-            "hint": "Kein Treffer. Kürzere Begriffe versuchen oder atlas_outline() nutzen.",
+            "hint": "No match. Try shorter terms or use atlas_outline().",
         }
         return _dumps(payload)
 
@@ -303,7 +307,7 @@ def _shrink(payload: dict[str, Any], budget: int) -> str:
 
     payload["hits"] = []
     payload["count"] = 0
-    payload["hint"] = "max_chars zu klein für Trefferdetails — erhöhen."
+    payload["hint"] = "max_chars too small for hit details — increase it."
     return _dumps(payload)
 
 
@@ -318,7 +322,7 @@ def search(
     hits = run_search(conn, query, k=k, doc=doc)
     payload: dict[str, Any] = {"query": query, "hits": hits, "count": len(hits)}
     if not hits:
-        payload["hint"] = "Kein Treffer. Kürzere Begriffe versuchen oder atlas_outline() nutzen."
+        payload["hint"] = "No match. Try shorter terms or use atlas_outline()."
     return _shrink(payload, budget)
 
 
@@ -337,7 +341,7 @@ def read(
     if not rows:
         return _dumps({
             "error": f"anchor '{anchor}' not found.",
-            "hint": "atlas_where() oder atlas_outline() nutzen.",
+            "hint": "Use atlas_where() or atlas_outline().",
         })
 
     first = rows[0]
@@ -411,7 +415,7 @@ def outline(conn: sqlite3.Connection, doc: str | None = None, max_chars: int = 8
         cut = text.rfind("\n", 0, budget)
         text = text[:cut if cut > 0 else budget]
         return _dumps({"outline": text, "truncated": True,
-                       "hint": "atlas_outline(doc='…') für ein einzelnes Dokument."})
+                       "hint": "Use atlas_outline(doc='…') for a single document."})
     return _dumps({"outline": text, "docs": len({r["doc_id"] for r in rows}), "truncated": False})
 
 

@@ -14,7 +14,7 @@ dependencies = [
 atlas = "atlas.cli:main"
 
 [project.urls]
-Homepage = "https://github.com/<DEIN-USER>/atlas-brief-mcp"
+Homepage = "https://github.com/drproof/atlas-brief-mcp"
 
 [dependency-groups]
 dev = ["pytest>=8.0"]

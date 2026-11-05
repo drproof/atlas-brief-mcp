@@ -52,7 +52,7 @@ Feature ist.
 ## Quickstart (offline, ohne Google)
 
 ```bash
-git clone https://github.com/<user>/atlas-brief-mcp
+git clone https://github.com/drproof/atlas-brief-mcp
 cd atlas-brief-mcp
 uv sync
 

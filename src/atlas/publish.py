@@ -198,12 +198,20 @@ def find_insert_index(body: dict, needle: str):
             end = (previous or {}).get("endIndex")
             if end is None:
                 end = content[index].get("startIndex", 1)
-            return end, _paragraph_text(content[start]).strip()
+            # `endIndex` liegt HINTER dem abschließenden Umbruch. Eingefügt
+            # wird davor, damit der neue Absatz vom Vorabsatz erbt und nicht
+            # von der folgenden Überschrift (sonst wird die Work Order zur
+            # HEADING_2).
+            return max(1, end - 1), _paragraph_text(content[start]).strip()
 
     ends = [el.get("endIndex") for el in content[start:] if el.get("endIndex")]
     if not ends:
         return None, None
-    return max(ends) - 1, _paragraph_text(content[start]).strip()
+    # Die Position des abschließenden `\n` des letzten Absatzes: davor wird
+    # eingefügt, mit führendem Umbruch im Text. Das frühere `line + "\n"`
+    # setzte den Text VOR den Umbruch und klebte ihn ans letzte Wort
+    # ("…TextWork Order 7 — ✅").
+    return max(1, max(ends) - 1), _paragraph_text(content[start]).strip()
 
 
 def _tab_text_of(docs, document_id: str, tab_id: str = "") -> str:
@@ -403,7 +411,7 @@ def publish(
 
     body = {
         "requests": [{
-            "insertText": {"location": location, "text": line + "\n"}
+            "insertText": {"location": location, "text": "\n" + line}
         }],
     }
     if revision:

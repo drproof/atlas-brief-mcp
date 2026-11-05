@@ -41,8 +41,12 @@ def _doc():
 
 
 def test_insert_point_is_end_of_section():
+    # Der Index zeigt auf den Umbruch, der den Abschnitt beendet — nicht
+    # dahinter. Eingefügt wird dort mit führendem "\n", damit die neue Zeile
+    # ein eigener Absatz wird und vom Vorabsatz erbt (nicht von der folgenden
+    # Überschrift, sonst würde sie zur HEADING_2).
     index, heading = find_insert_index(_doc()["body"], "Prototyp-Meilenstein-Plan")
-    assert index == 150
+    assert index == 149
     assert "Prototyp" in heading
 
 
@@ -204,3 +208,21 @@ def test_set_status_swaps_whole_marker_pair():
     """'✅ ERLEDIGT' -> '⬜ OFFEN': der Text muss mitwechseln, nicht nur das Emoji."""
     assert publish.format_line(9, "open", "", "") == "Work Order 9 — ⬜ OFFEN:"
     assert publish.format_line(9, "done", "", "") == "Work Order 9 — ✅ ERLEDIGT:"
+
+
+def test_newline_prefix_starts_a_new_paragraph():
+    """Regression zu `line + "\n"` am Absatzende.
+
+    Simuliert die Docs-Insert-Semantik: Einfügen an der Position des
+    abschließenden Umbruchs. Ohne führenden Umbruch klebt die Work Order am
+    letzten Wort ("…AbschnittsWork Order 7 — ✅").
+    """
+    text = "Text des Abschnitts\nNächster Abschnitt\n"
+    index = len("Text des Abschnitts")  # Position des Umbruchs
+    line = "Work Order 7 — ✅ ERLEDIGT (Test)"
+
+    fixed = text[:index] + "\n" + line + text[index:]
+    assert fixed.splitlines() == ["Text des Abschnitts", line, "Nächster Abschnitt"]
+
+    broken = text[:index] + line + "\n" + text[index:]
+    assert "Abschnitts" + line in broken, "der alte Weg klebte die Zeile an"

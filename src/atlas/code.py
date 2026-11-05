@@ -1,9 +1,10 @@
 """Symbolsuche im Code — Datei, Zeile, Signatur statt 125k-Token-Datei.
 
-Ein Agent, der `turn_manager.gd` komplett liest, verbrennt 124.969 Tokens. Für die
-Frage „wo ist `swap_positions_with_ally` definiert?" reichen Datei, Zeile und
-Signatur. Dieses Modul macht genau das, ohne Index: einmal über die Quellen,
-Substring-Filter vor dem Regex (das ist der billige Teil), dann nur die Treffer.
+An agent that reads a 9,000-line manager module end to end burns ~125,000 tokens.
+For the question "where is `swap_positions_with_ally` defined?" a file, a line and
+a signature are enough. This module does exactly that, without an index: one pass
+over the sources, substring filter before the regex (that is the cheap part), then
+only the hits.
 
 Bewusst kein Parser: GDScript-Signaturen sind mit zwei Regexen zuverlässig genug,
 und ein Symbol-Index müsste bei jeder Code-Änderung nachziehen.

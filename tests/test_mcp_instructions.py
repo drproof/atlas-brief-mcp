@@ -1,14 +1,8 @@
-"""Die MCP-Instructions sind die einzige Regel, die ein frisch gestarteter Client
-ohne geladene AGENTS.md sieht. Sie müssen die Schreib-Guardrails enthalten — und
-dürfen keine Tools nennen, die es nicht gibt.
-
-Letzteres ist kein theoretischer Fall: Ein Regelvorschlag aus der Praxis nannte
-`atlas_check_task`, während das Tool `atlas_set_status` heißt. Ein Agent, der die
-Regel wörtlich nimmt, ruft ein nicht existierendes Tool auf und improvisiert.
-"""
+"""Verify that MCP server instructions and tool schemas include all required guardrails and metadata."""
 
 from __future__ import annotations
 
+import asyncio
 import re
 
 from atlas import mcp_server
@@ -35,7 +29,7 @@ def test_spec_is_declared_read_only():
 
 def test_names_all_write_tools():
     for tool in ("atlas_set_status", "atlas_publish", "atlas_sheet_update"):
-        assert tool in _instructions(), f"{tool} fehlt in den Instructions"
+        assert tool in _instructions(), f"{tool} missing from instructions"
 
 
 def test_forbids_cell_coordinates():
@@ -45,8 +39,28 @@ def test_forbids_cell_coordinates():
 
 
 def test_only_names_tools_that_exist():
-    """Fängt erfundene Tool-Namen in den Instructions."""
+    """Catches invented tool names in the server instructions."""
     existing = {name for name in dir(mcp_server) if name.startswith("atlas_")}
     mentioned = set(re.findall(r"\batlas_[a-z_]+\b", _instructions()))
     unknown = mentioned - existing
-    assert not unknown, f"Instructions nennen nicht existierende Tools: {sorted(unknown)}"
+    assert not unknown, f"Instructions reference non-existent tools: {sorted(unknown)}"
+
+
+def test_all_tools_have_annotations_and_parameter_descriptions():
+    """Every tool must expose MCP ToolAnnotations and descriptions for all parameters (TDQS)."""
+    tools = asyncio.run(mcp_server.mcp.list_tools())
+    assert len(tools) == 15
+    for tool in tools:
+        assert tool.annotations is not None, f"{tool.name} is missing ToolAnnotations"
+        assert tool.annotations.title, f"{tool.name} is missing annotations.title"
+        assert tool.annotations.readOnlyHint is not None, f"{tool.name} missing readOnlyHint"
+        assert tool.annotations.destructiveHint is not None, f"{tool.name} missing destructiveHint"
+        assert tool.annotations.idempotentHint is not None, f"{tool.name} missing idempotentHint"
+        assert tool.annotations.openWorldHint is not None, f"{tool.name} missing openWorldHint"
+
+        props = (tool.inputSchema or {}).get("properties", {})
+        for param_name, param_schema in props.items():
+            desc = param_schema.get("description", "")
+            assert desc and len(desc) >= 20, (
+                f"{tool.name}.{param_name} is missing a detailed description in inputSchema"
+            )

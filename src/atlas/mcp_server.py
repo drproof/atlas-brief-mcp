@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Annotated, Literal
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
+from pydantic import Field
 
 from . import search as search_mod
 from .config import find_root
@@ -34,6 +37,13 @@ INSTRUCTIONS = (
 )
 
 mcp = FastMCP("atlas", instructions=INSTRUCTIONS)
+
+_READ_ONLY_LOCAL = ToolAnnotations(
+    readOnlyHint=True,
+    destructiveHint=False,
+    idempotentHint=True,
+    openWorldHint=False,
+)
 
 _root: Path | None = None
 _conn = None
@@ -95,109 +105,343 @@ def _health(fn):
 def _fresh():
     root, conn = _state()
     from . import gdocs, normalize
-
-    # Projekt-Synonyme laden — über cache_dir, damit auch `.gdd/`-Projekte
-    # ihre aliases.yml behalten.
     from .config import cache_dir
 
     normalize.load_aliases(cache_dir(root) / "aliases.yml")
-    # Erst den Google-Stand nachziehen (mit 5-Minuten-Cache), dann indexieren.
     gdocs.auto_sync(root, conn)
     ensure_fresh(conn, root)
     return root, conn
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Locate Documentation Section",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    )
+)
 @_health
-def atlas_where(topic: str) -> str:
-    """Where is something in the docs? Returns file, line, heading and anchor — no full text.
+def atlas_where(
+    topic: Annotated[
+        str,
+        Field(
+            description=(
+                "Natural-language question or topic keywords to locate in the project "
+                "documentation (e.g. 'damage model', 'Where is dialogue branching described?'). "
+                "Supports English and German terms with automatic stop-word removal and umlaut folding."
+            ),
+            min_length=1,
+        ),
+    ],
+) -> str:
+    """Locate the best-matching documentation section for a topic and return its pointer (~60 tokens) without full text.
 
-    FIRST CHOICE for 'where do I find X?', 'which file holds Y?', 'which section
-    describes Z?'. The answer is tiny (~60 tokens). Follow up with atlas_read(anchor)
-    if you need the text.
+    Use this tool FIRST for 'where is X documented?', 'which file covers Y?', or 'which section defines Z?'.
+    Follow up with `atlas_read(anchor)` only if you need the section body, or fall back to `atlas_search`
+    if you need multiple ranked snippets across documents.
+
+    Behavior & Output:
+    - Read-only, deterministic BM25 lookup against the local SQLite FTS5 index (auto-refreshed before query).
+    - Returns a JSON string with `{found: true, anchor, heading, path, line, alternatives}` when matched,
+      or `{found: false, hint}` when no section matches.
     """
     _, conn = _fresh()
     return search_mod.where(conn, topic)
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Full-Text Documentation Search",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    )
+)
 @_health
-def atlas_search(query: str, k: int = 5, doc: str | None = None) -> str:
-    """Full-text search across all sections, with snippets and BM25 ranking.
+def atlas_search(
+    query: Annotated[
+        str,
+        Field(
+            description=(
+                "Keywords or phrase to search across all indexed documentation sections "
+                "(e.g. 'cover reduction', 'turn order'). Uses lexical FTS5 matching with "
+                "umlaut folding ('Hoehe' matches 'Höhe') and German compound splitting."
+            ),
+            min_length=1,
+        ),
+    ],
+    k: Annotated[
+        int,
+        Field(
+            default=5,
+            ge=1,
+            le=50,
+            description="Maximum number of ranked section hits to return (1-50, default 5).",
+        ),
+    ] = 5,
+    doc: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description=(
+                "Optional document ID (e.g. 'combat' or '02-combat') to restrict the search "
+                "to a single document. Omit or pass null to search all documents."
+            ),
+        ),
+    ] = None,
+) -> str:
+    """Run a BM25 full-text search across documentation sections and return ranked snippets with anchors.
 
-    Lexical, via SQLite FTS5 — **no** embeddings, no synonyms. Use words that appear
-    in the documentation. Umlauts are folded ("Hoehe" finds "Höhe") and German
-    compounds are split partially ("Kampfsystem" finds "Kampf-System").
+    Use this tool for broad or multi-section topics ('where all is armor mentioned?') or when
+    `atlas_where` returns no single match. Pass a returned `anchor` to `atlas_read` to inspect the full section.
 
-    For fuzzy topics ('how does cover work?') or when atlas_where finds nothing.
-    k = number of hits (default 5). doc = optionally restrict to one document id.
+    Behavior & Output:
+    - Read-only lexical search via SQLite FTS5 (no embeddings; project synonyms come from `.atlas/aliases.yml`).
+    - Returns a JSON string `{query, count, hits: [{anchor, title, path, line, snippet, score}]}`.
+      Returns `count: 0` and an empty `hits` list if nothing matches.
     """
     _, conn = _fresh()
     return search_mod.search(conn, query, k=k, doc=doc)
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Read Documentation Section by Anchor",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    )
+)
 @_health
-def atlas_read(anchor: str, offset: int = 0, max_chars: int = 3000) -> str:
-    """Read exactly ONE section by its anchor (e.g. 'combat-system#damage-model').
+def atlas_read(
+    anchor: Annotated[
+        str,
+        Field(
+            description=(
+                "Section anchor identifier in `<doc_id>#<section-slug>` format (or `<doc_id>` for "
+                "the document root), as returned by `atlas_where`, `atlas_search`, or `atlas_outline` "
+                "(e.g. 'combat#damage-model')."
+            ),
+            min_length=1,
+        ),
+    ],
+    offset: Annotated[
+        int,
+        Field(
+            default=0,
+            ge=0,
+            description=(
+                "Character offset to start reading from (default 0). When a previous call returned "
+                "`truncated: true`, pass its `next_offset` value here to read the next page."
+            ),
+        ),
+    ] = 0,
+    max_chars: Annotated[
+        int,
+        Field(
+            default=3000,
+            ge=100,
+            le=50000,
+            description="Maximum number of characters to return in one call (default 3000).",
+        ),
+    ] = 3000,
+) -> str:
+    """Read the Markdown content of a single documentation section by its anchor with character-budget pagination.
 
-    Use the anchor from atlas_where/atlas_search/atlas_outline. If truncated=true,
-    continue with next_offset. This is the only way to read documentation content.
+    Use this tool after obtaining an `anchor` from `atlas_where`, `atlas_search`, or `atlas_outline`.
+    Never read raw documentation files from disk when `atlas_read` can fetch the exact section.
+
+    Behavior & Output:
+    - Read-only lookup from the local documentation index.
+    - Returns a JSON string `{anchor, heading, path, lines, content, truncated, next_offset}`.
+      If the anchor does not exist, returns `{error, suggestions}` with the closest valid anchors.
     """
     _, conn = _fresh()
     return search_mod.read(conn, anchor, offset=offset, max_chars=max_chars)
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Get Documentation Table of Contents",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    )
+)
 @_health
-def atlas_outline(doc: str | None = None) -> str:
-    """Table of contents of all documents (or a single one via doc='id').
+def atlas_outline(
+    doc: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description=(
+                "Optional document ID (e.g. '02-combat' or 'architecture') to list headings "
+                "for a single document. Omit or pass null to list the table of contents for all documents."
+            ),
+        ),
+    ] = None,
+) -> str:
+    """Return the hierarchical table of contents (headings and section anchors) across indexed documentation.
 
-    Use this when you don't know the structure yet, or when a topic was not found
-    anywhere.
+    Use this tool when exploring an unfamiliar project structure, browsing available documents,
+    or when keyword searches (`atlas_where` / `atlas_search`) did not match your query terms.
+
+    Behavior & Output:
+    - Read-only, side-effect-free query of indexed document headings.
+    - Returns a JSON string `{doc, outline, truncated}` where `outline` lists each heading level,
+      title, and `anchor` ready for `atlas_read`.
     """
     _, conn = _fresh()
     return search_mod.outline(conn, doc=doc)
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="List Documentation Checkbox Tasks",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    )
+)
 @_health
-def atlas_tasks(status: str = "open", owner: str | None = None) -> str:
-    """Open design/development tasks from the documentation's checkbox list.
+def atlas_tasks(
+    status: Annotated[
+        Literal["open", "done", "all"],
+        Field(
+            default="open",
+            description=(
+                "Filter tasks by completion state: 'open' for unchecked `- [ ]` items (default), "
+                "'done' for checked `- [x]` items, or 'all' for both."
+            ),
+        ),
+    ] = "open",
+    owner: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description=(
+                "Optional owner handle to filter tasks assigned via `@name` tags in Markdown "
+                "(e.g. '@design' or 'design'). Omit or pass null for all owners."
+            ),
+        ),
+    ] = None,
+) -> str:
+    """List design and development action items (`- [ ]` / `- [x]` checkboxes) extracted from all documentation sections.
 
-    status: 'open' | 'done' | 'all'. owner: optionally filter by '@name'.
+    Use this tool to inspect granular checklist items embedded in specs. To inspect numbered
+    high-level Work Orders (`Work Order N — ⬜ OPEN / ✅ DONE`), use `atlas_status` instead.
+
+    Behavior & Output:
+    - Read-only query over indexed Markdown checkboxes.
+    - Returns a JSON string `{status, owner, count, tasks: [{text, done, owner, tags, anchor, path, line}]}`.
     """
     _, conn = _fresh()
     return search_mod.tasks(conn, status=status, owner=owner)
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Inspect Section Links and Code Relations",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    )
+)
 @_health
-def atlas_links(anchor: str) -> str:
-    """A section's relations: affected code files (implements), tags, sibling sections.
+def atlas_links(
+    anchor: Annotated[
+        str,
+        Field(
+            description=(
+                "Section anchor identifier in `<doc_id>#<section-slug>` or `<doc_id>` format "
+                "(e.g. 'combat#damage-model'), as returned by `atlas_where`, `atlas_search`, or `atlas_outline`."
+            ),
+            min_length=1,
+        ),
+    ],
+) -> str:
+    """Inspect a documentation section's relationships: linked source files (`implements`), tags, cross-references, and sibling sections.
 
-    For 'what is connected to this?' or 'which code implements this section?'.
+    Use this tool to answer 'which code files implement this spec section?' or 'what other sections
+    reference or belong to the same document as this anchor?'.
+
+    Behavior & Output:
+    - Read-only lookup against the local section graph and frontmatter metadata (`implements`, `tags`).
+    - Returns a JSON string `{anchor, heading, path, implements: [...], tags: [...], outgoing_links: [...], incoming_links: [...], siblings: [...]}`
+      or `{error}` if the anchor is unknown.
     """
     _, conn = _fresh()
     return search_mod.links(conn, anchor)
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Build Self-Contained Subagent Task Brief",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    )
+)
 @_health
-def atlas_brief(goal: str, max_sections: int = 5, work_order: int | None = None,
-              files: list[str] | None = None) -> str:
-    """Build a ready-to-use task brief for a subagent: relevant sections,
-    affected code files, the project guardrails and the closing step.
+def atlas_brief(
+    goal: Annotated[
+        str,
+        Field(
+            description=(
+                "One-sentence description of the task to prepare a brief for "
+                "(e.g. 'wire the dwarf vault-charger perk into turn_manager')."
+            ),
+            min_length=1,
+        ),
+    ],
+    max_sections: Annotated[
+        int,
+        Field(
+            default=5,
+            ge=1,
+            le=20,
+            description="Maximum number of relevant documentation sections to embed in the brief (1-20, default 5).",
+        ),
+    ] = 5,
+    work_order: Annotated[
+        int | None,
+        Field(
+            default=None,
+            ge=1,
+            description=(
+                "Optional Work Order number (e.g. 7). When provided, the brief includes the exact "
+                "`atlas_publish` / `atlas_set_status` closing command for that Work Order."
+            ),
+        ),
+    ] = None,
+    files: Annotated[
+        list[str] | None,
+        Field(
+            default=None,
+            description=(
+                "Optional list of relative source file paths to include alongside auto-detected "
+                "`implements` files (e.g. ['scripts/unit.gd', 'src/combat.py'])."
+            ),
+        ),
+    ] = None,
+) -> str:
+    """Assemble a self-contained Markdown task brief for a coding agent or subagent.
 
-    Use this when delegating a task instead of handing the subagent your
-    documentation file. The brief is self-contained and contains stable anchors.
+    Use this tool before starting or delegating a feature task. It bundles the top matching spec
+    sections (with stable anchors), linked source file paths, open tasks, project guardrails, and
+    the verified checkoff command so the subagent does not need to search from scratch.
 
-    Args:
-        goal: The task in one sentence, e.g. 'wire the dwarf vault-charger perk'.
-        max_sections: number of sections to include (default 5).
-        work_order: optional work order number — the brief then contains the
-            ready-made `atlas_publish` call for closing it.
-        files: optional affected code files, e.g. ['scripts/unit.gd'].
+    Behavior & Output:
+    - Read-only aggregation of indexed documentation sections and code metadata.
+    - Returns a formatted Markdown brief string ready to paste into a subagent prompt.
     """
     root, conn = _fresh()
     from . import brief as brief_mod
@@ -206,25 +450,69 @@ def atlas_brief(goal: str, max_sections: int = 5, work_order: int | None = None,
                            work_order=work_order, extra_files=files)
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Publish Verified Work-Order Entry",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    )
+)
 @_health
-def atlas_publish(wo: int, title: str, description: str = "", status: str = "done",
-                verify_symbols: list[str] | None = None) -> str:
-    """Append a work-order status line — append-only and verified.
+def atlas_publish(
+    wo: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Work Order number (positive integer, e.g. 7 for 'Work Order 7').",
+        ),
+    ],
+    title: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description="Short title of the Work Order (e.g. 'Critical Hit Calculation').",
+        ),
+    ],
+    description: Annotated[
+        str,
+        Field(
+            default="",
+            description="Optional summary of what was implemented and which files were touched.",
+        ),
+    ] = "",
+    status: Annotated[
+        Literal["done", "open"],
+        Field(
+            default="done",
+            description="Target Work Order status: 'done' (writes `✅ DONE`, default) or 'open' (writes `⬜ OPEN`).",
+        ),
+    ] = "done",
+    verify_symbols: Annotated[
+        list[str] | None,
+        Field(
+            default=None,
+            description=(
+                "List of function or class names built in this Work Order (e.g. ['apply_crit_bonus']). "
+                "When `status='done'`, each symbol is checked before writing: if any symbol is undefined "
+                "or has 0 callers/references across the codebase, the write is refused."
+            ),
+        ),
+    ] = None,
+) -> str:
+    """Append a new Work Order status entry to the documentation — gated by a code-wiring check and verified by read-back.
 
-    Use this as the LAST step after a task instead of writing into the document
-    yourself. The tool appends the line to the work-order section, then reads the
-    document back through the Docs API and only reports success (`verified: true`)
-    if the line is really there. In local projects (no Google Doc bound) it writes
-    into the managed Markdown file with the same verification.
+    Use this tool as the FINAL step after tests pass to record a new Work Order in the bound Google Doc
+    or local managed Markdown file (`docs/ARCHITECTURE.md`). If the Work Order heading already exists and
+    you only need to flip `⬜ OPEN` to `✅ DONE`, use `atlas_set_status` instead.
 
-    status: 'done' (✅ DONE) or 'open' (⬜ OPEN).
-
-    verify_symbols: the symbols this work order built. With 'done', the tool checks
-    BEFORE writing whether they are defined AND used. A symbol that is defined but
-    never called makes the write fail (`written: false, refused: true`) — exactly
-    the failure mode that killed WO 8. Also record them in `.atlas/wo-symbols.yml`
-    so later regressions are caught by `atlas doctor`.
+    Behavior & Output:
+    - Pre-write wiring gate: when `status='done'`, verifies that every symbol in `verify_symbols` (and
+      `.atlas/wo-symbols.yml`) is both defined and referenced/called (`calls + references > 0`). If any
+      symbol is dead code, returns `{written: false, refused: true, refusal: "..."}` without touching disk/network.
+    - Atomic verified write: appends the formatted status line, reads the document back to confirm presence,
+      logs to `.atlas/mutations.log`, and returns `{written: true, verified: true, wo, line}`.
     """
     from . import gdocs, publish as publish_mod
 
@@ -239,19 +527,53 @@ def atlas_publish(wo: int, title: str, description: str = "", status: str = "don
     return json.dumps(result, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Update Existing Work-Order Status",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    )
+)
 @_health
-def atlas_set_status(wo: int, status: str = "done",
-                   verify_symbols: list[str] | None = None) -> str:
-    """Change the status of an ALREADY documented work order (✅ <-> ⬜).
+def atlas_set_status(
+    wo: Annotated[
+        int,
+        Field(
+            ge=1,
+            description="Existing Work Order number to update (positive integer, e.g. 8 for 'Work Order 8').",
+        ),
+    ],
+    status: Annotated[
+        Literal["done", "open"],
+        Field(
+            default="done",
+            description="New status for the Work Order: 'done' (`✅ DONE`, default) or 'open' (`⬜ OPEN`).",
+        ),
+    ] = "done",
+    verify_symbols: Annotated[
+        list[str] | None,
+        Field(
+            default=None,
+            description=(
+                "Optional list of function or class names that must be defined and called/referenced "
+                "in the codebase before `status='done'` is allowed. Merged with `.atlas/wo-symbols.yml`."
+            ),
+        ),
+    ] = None,
+) -> str:
+    """Flip the status marker (`⬜ OPEN` <-> `✅ DONE`) of an already documented Work Order in place.
 
-    For open orders that just finished: `atlas_set_status(8, "done")`.
-    Uses replaceAllText on the unique status string — no index arithmetic.
-    To add a NEW order use `atlas_publish`, not this tool.
+    Use this tool as the final step when completing an existing open Work Order. To append a brand-new
+    Work Order entry that is not yet in the document, use `atlas_publish` instead.
 
-    With 'done' the same wiring check applies as in `atlas_publish`: symbols from
-    verify_symbols and from `.atlas/wo-symbols.yml` must be defined and used, or the
-    status is not set.
+    Behavior & Output:
+    - Pre-write wiring gate: when `status='done'`, checks that all symbols in `verify_symbols` and
+      `.atlas/wo-symbols.yml` are defined and have at least one caller/reference. Refuses with
+      `{changed: false, refused: true, refusal: "..."}` if any symbol is unwired.
+    - Verified in-place update: updates the status marker in the local Markdown file or active Google Doc tab,
+      verifies the change by reading back, and returns JSON `{changed, verified, wo, status}`.
     """
     from . import gdocs, publish as publish_mod
 
@@ -264,32 +586,71 @@ def atlas_set_status(wo: int, status: str = "done",
     return json.dumps(result, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Update Spreadsheet Row by Key and Column Name",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    )
+)
 @_health
 def atlas_sheet_update(
-    tab: str,
-    row_key: str,
-    updates: dict,
-    sheet: str | None = None,
-    key_column: str | None = None,
-    dry_run: bool = False,
+    tab: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description="Exact worksheet/tab name inside the spreadsheet (e.g. 'Units' or 'Weapons'). Use `atlas_sheets` to list valid tabs.",
+        ),
+    ],
+    row_key: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description="Primary key value identifying the target row in the key column (e.g. 'monster_goblin').",
+        ),
+    ],
+    updates: Annotated[
+        dict[str, str | int | float | bool | None],
+        Field(
+            description=(
+                "Mapping of `{column_header_name: new_value}` for the cells to update in that row "
+                "(e.g. `{\"HP\": 45, \"Status\": \"✅\"}`). Never pass raw cell coordinates like 'C14'."
+            ),
+        ),
+    ],
+    sheet: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="Optional spreadsheet name or ID when multiple spreadsheets are registered. Omit if only one spreadsheet exists.",
+        ),
+    ] = None,
+    key_column: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="Optional header name of the key column used to match `row_key`. Defaults to the first column of the tab.",
+        ),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        Field(
+            default=False,
+            description="If true, compute and return the cell diff without writing changes to the spreadsheet (default false).",
+        ),
+    ] = False,
 ) -> str:
-    """Change individual cells of one row — via key plus column name.
+    """Update specific cells of an existing spreadsheet row by `row_key` and column header name (never by cell coordinate).
 
-    NEVER use cell coordinates like 'C14'. The row key is the value of the first
-    column (e.g. 'monster_goblin'); columns are named as in the header
-    (e.g. {"HP": 45, "Status": "✅"}).
+    Use this tool to modify balancing values, implementation markers, or metadata in an existing row.
+    To add a brand-new row to a tab, use `atlas_sheet_append`. If unsure of tab names, call `atlas_sheets` first.
 
-    Args:
-        tab: sheet name exactly as in the spreadsheet (e.g. 'Units').
-        row_key: value of the key column that identifies the row.
-        updates: {column name: new value} — only the columns to change.
-        sheet: spreadsheet name or id, only needed when several sources exist.
-        key_column: name of the key column if it is not the first one.
-        dry_run: true = show the diff only, write nothing.
-
-    A wrong column name returns the list of allowed headers — fix the call and
-    retry. After success the search index is updated immediately.
+    Behavior & Output:
+    - Resolves the exact cell range from `row_key` + header names, preventing off-by-one row overwrites.
+    - If a column name is unknown, aborts without writing and returns the list of valid column headers.
+    - Returns JSON `{ok, sheet, tab, row, key, changes, verified, resynced, dry_run}` and refreshes the local search index.
     """
     from . import gdocs, sheets as sheets_mod
 
@@ -316,20 +677,58 @@ def atlas_sheet_update(
     }, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Append Row to Spreadsheet by Column Name",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=False,
+        openWorldHint=True,
+    )
+)
 @_health
-def atlas_sheet_append(tab: str, values: dict, sheet: str | None = None,
-                     dry_run: bool = False) -> str:
-    """Append a new row to a sheet — columns by header, not by position.
+def atlas_sheet_append(
+    tab: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description="Exact worksheet/tab name inside the spreadsheet (e.g. 'Units'). Use `atlas_sheets` to discover valid tab names.",
+        ),
+    ],
+    values: Annotated[
+        dict[str, str | int | float | bool | None],
+        Field(
+            description=(
+                "Mapping of `{column_header_name: value}` for the new row "
+                "(e.g. `{\"ID\": \"monster_goblin\", \"Name\": \"Goblin\", \"HP\": 100}`). "
+                "Omitted columns are left empty."
+            ),
+        ),
+    ],
+    sheet: Annotated[
+        str | None,
+        Field(
+            default=None,
+            description="Optional spreadsheet name or ID when multiple spreadsheets are bound to the project.",
+        ),
+    ] = None,
+    dry_run: Annotated[
+        bool,
+        Field(
+            default=False,
+            description="If true, validate column headers and preview the row without writing to the spreadsheet (default false).",
+        ),
+    ] = False,
+) -> str:
+    """Append a new row to a spreadsheet tab by mapping column header names to values.
 
-    Example: tab='Units', values={"ID": "monster_goblin", "Name": "Goblin",
-    "HP": 100, "Armor": 2}. Missing columns stay empty.
+    Use this tool when adding a new entry (e.g. a new unit, item, or parameter row) to a bound spreadsheet.
+    To modify cells of an existing row, use `atlas_sheet_update` instead.
 
-    Args:
-        tab: sheet name exactly as in the spreadsheet.
-        values: {column name: value} for the new row.
-        sheet: spreadsheet name or id, only needed with several sources.
-        dry_run: true = show what would be appended.
+    Behavior & Output:
+    - Not idempotent: each non-dry-run call appends a new row at the bottom of the table and verifies it by read-back.
+    - Validates all keys in `values` against the tab's header row before writing.
+    - Returns JSON `{ok, sheet, tab, values, range, verified, resynced, dry_run}` and updates the local search index.
     """
     from . import gdocs, sheets as sheets_mod
 
@@ -351,13 +750,26 @@ def atlas_sheet_append(tab: str, values: dict, sheet: str | None = None,
     }, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="List Bound Spreadsheets and Worksheet Tabs",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=True,
+    )
+)
 @_health
 def atlas_sheets() -> str:
-    """List the known spreadsheets and their tab names.
+    """List all spreadsheets bound to the project along with their worksheet tab names.
 
-    Use this before calling atlas_sheet_update/atlas_sheet_append if you don't know
-    the exact sheet name. Returns names only, no cell contents.
+    Takes no parameters. Call this tool before `atlas_sheet_update` or `atlas_sheet_append`
+    whenever you need to discover the exact `sheet` name/ID or valid `tab` names.
+
+    Behavior & Output:
+    - Read-only metadata lookup; returns spreadsheet and tab names without dumping cell contents.
+    - Returns JSON `{spreadsheets: [{name, id, tabs: [...]}]}` or `{spreadsheets: [], hint: "..."}`
+      when no spreadsheet has been synced yet.
     """
     from . import gdocs, sheets as sheets_mod
 
@@ -383,26 +795,58 @@ def atlas_sheets() -> str:
     return json.dumps({"spreadsheets": payload}, ensure_ascii=False)
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Find Code Symbol Definitions and Call Sites",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    )
+)
 @_health
-def atlas_code_find(symbol: str, limit: int = 10, usage: bool = False) -> str:
-    """Find the definition of a function or class in code — file, line, signature.
+def atlas_code_find(
+    symbol: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Function, method, or class name (or substring) to search for across the codebase "
+                "(e.g. 'apply_damage' or 'TurnManager'). Does not match local variables."
+            ),
+        ),
+    ],
+    limit: Annotated[
+        int,
+        Field(
+            default=10,
+            ge=1,
+            le=100,
+            description="Maximum number of matching symbol definitions to return (1-100, default 10).",
+        ),
+    ] = 10,
+    usage: Annotated[
+        bool,
+        Field(
+            default=False,
+            description=(
+                "If true, also scan the repository for call sites and references to each matched symbol "
+                "(including Godot `.tscn` signal bindings) to verify whether the symbol is wired up (default false)."
+            ),
+        ),
+    ] = False,
+) -> str:
+    """Locate function or class definitions across the codebase (file, line, signature) and optionally inspect call sites.
 
-    Use this BEFORE reading a source file: a 9,000-line manager module is
-    ~125,000 tokens, one signature costs ~30. For 'where is X defined and what is
-    its signature?' this is the cheap path.
+    Use this tool BEFORE reading source files to find where a symbol lives (~30 tokens per signature vs.
+    thousands of tokens for a full file) or set `usage=True` to check if a symbol is actually called before
+    marking a task done. Supports GDScript (`.gd`/`.tscn`), Python, TypeScript/JavaScript, Rust, C#, Go,
+    Java, Kotlin, and Swift.
 
-    Supports GDScript, Python, TypeScript/JavaScript, Rust, C#, Go, Java, Kotlin
-    and Swift — the same patterns `atlas init` uses.
-
-    Args:
-        symbol: function or class name (a substring is enough).
-        limit: maximum hits (default 10).
-        usage: true = also show the call sites. That tells you whether a function
-            is used at all — an implementation without a caller is dead code, even
-            if it looks complete.
-
-    Variables and signals are NOT found this way — use `grep -n` for those.
+    Behavior & Output:
+    - Read-only static scan of project source files; ignores build directories and `.atlas/`.
+    - Returns a formatted summary of matching definitions (`path:line — signature`) and, when `usage=True`,
+      the caller/reference count and file:line call sites for each symbol.
     """
     root, _ = _fresh()
     from . import code as code_mod
@@ -410,48 +854,62 @@ def atlas_code_find(symbol: str, limit: int = 10, usage: bool = False) -> str:
     return code_mod.render(root, symbol, limit=limit, with_usage=usage)
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Lint Documentation Structure and Links",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    )
+)
 @_health
 def atlas_lint() -> str:
-    """Check documentation structure and return the formatting problems that make
-    the index hard to read (empty headings, sections without content, overly long
-    sections, work orders without a status marker, navigation lines).
+    """Audit indexed documentation for structural and formatting problems that degrade retrieval quality.
 
-    Use this before restructuring the docs — or after an agent run.
+    Takes no parameters. Checks managed documentation for duplicate section anchors, empty headings,
+    oversized sections (>8,000 chars), Work Orders missing a status marker (`⬜`/`🚧`/`✅`), and broken
+    `implements:` code file paths. Use this tool after editing documentation or running `atlas init`.
+
+    Behavior & Output:
+    - Read-only structural check; respects `.atlas/managed.json` (separating managed docs from legacy discovered docs).
+    - Returns a JSON string `{managed_issues: [...], discovered_hints: [...], clean: bool}` detailing each issue by file and line.
     """
     from . import bootstrap, lint as lint_mod
 
     root, conn = _fresh()
-    # Ohne managed-Liste gilt alles als verwaltet — das ist der Altvertrag und
-    # für Google-Docs-Projekte richtig. Mit Liste zählt nur atlas-eigene Doku.
     return lint_mod.lint(conn, managed=bootstrap.load_managed(root))
 
 
-@mcp.tool()
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="List Work-Order Progress Status",
+        readOnlyHint=True,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    )
+)
 @_health
 def atlas_status() -> str:
-    """Project progress: which work orders are done, which are open.
+    """Return the complete list of documented Work Orders (`⬜ OPEN`, `🚧 IN PROGRESS`, `✅ DONE`) and index freshness.
 
-    Use this when you need the current state instead of reading the documentation.
-    Returns number, status and title as a ready-made list, plus one line saying how
-    old the state is. This answer is the source: no second call, no CLI, no look at
-    the source code needed.
+    Takes no parameters. Use this tool first when asked about project progress, completed milestones,
+    or which Work Order is next — one call returns the authoritative list without reading documentation files.
+    For granular Markdown checkboxes (`- [ ]`), use `atlas_tasks` instead.
+
+    Behavior & Output:
+    - Read-only query over all Work Order headings/entries in the index (up to 60 orders).
+    - Returns a human- and agent-readable summary starting with the index freshness timestamp,
+      total counts (`done` / `open`), and one line per Work Order (`WO # — status — title (anchor)`).
     """
     import json as _json
 
     from . import status as status_mod
 
     _, conn = _fresh()
-    # Alle Work Orders, nicht die ersten 20: eine gekürzte Liste ist der Grund,
-    # warum Agenten anfangen, gegen die CLI nachzuprüfen.
     payload = _json.loads(status_mod.status(conn, limit=60, max_chars=60000))
     return status_mod.status_text(payload)
-
-
-# `atlas_index` und `atlas_doctor` gibt es bewusst nur in der CLI.
-# Der Index aktualisiert sich bei jedem Tool-Call selbst (auto_sync + ensure_fresh)
-# und nach jedem Write (Write-Through). Ein Agent muss ihn nie neu bauen, und jede
-# Tool-Definition kostet permanent System-Kontext.
 
 
 @mcp.resource("atlas://outline")
@@ -469,7 +927,6 @@ def resource_section(anchor: str) -> str:
 
 
 def run() -> None:
-    # Einmal beim Start synchronisieren — dann ist der erste Tool-Call sofort da.
     try:
         root, conn = _state()
         from . import gdocs

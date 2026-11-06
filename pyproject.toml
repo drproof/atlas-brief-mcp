@@ -1,8 +1,35 @@
 [project]
 name = "atlas-brief-mcp"
-version = "0.2.0"
-description = "Local MCP index for project documentation: token-saving search, verified status lines, wiring gate"
+version = "0.2.1"
+description = "Local MCP index for project documentation: token-saving BM25 search, verified status lines, and multi-language code wiring gate"
+readme = "README.md"
+license = { file = "LICENSE" }
 requires-python = ">=3.10"
+authors = [
+    { name = "DrProof", email = "222544540+drproof@users.noreply.github.com" },
+]
+keywords = [
+    "mcp",
+    "model-context-protocol",
+    "documentation",
+    "sqlite",
+    "fts5",
+    "bm25",
+    "coding-agents",
+    "architecture",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Documentation",
+    "Topic :: Software Development :: Quality Assurance",
+]
 dependencies = [
     "google-api-python-client>=2.201.0",
     "google-auth-oauthlib>=1.5.0",
@@ -15,6 +42,8 @@ atlas = "atlas.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/drproof/atlas-brief-mcp"
+Repository = "https://github.com/drproof/atlas-brief-mcp"
+Issues = "https://github.com/drproof/atlas-brief-mcp/issues"
 
 [dependency-groups]
 dev = ["pytest>=8.0"]

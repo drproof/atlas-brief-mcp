@@ -1,3 +1,3 @@
-"""atlas — lokaler MCP-Index für Game Design Documents."""
+"""atlas — local MCP index and wiring gate for project documentation."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.1"

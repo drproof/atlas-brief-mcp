@@ -151,3 +151,56 @@ def test_legacy_marker_survives_status_back_and_forth(tmp_path):
     line = localwrite.find_line(root, 1)[2].group(0)
     assert "⬜ OPEN" in line
     assert "Complete the architecture doc" in line
+
+
+def test_checkbox_task_toggle_and_wiring_gate(tmp_path):
+    """Markdown `- [ ]` tasks can be toggled via `set_status(task=...)` and respect the wiring gate."""
+    root, conn = _project(tmp_path)
+    doc = root / "docs" / "ARCHITECTURE.md"
+    doc.write_text(
+        doc.read_text(encoding="utf-8")
+        + "\n## Tasks\n\n- [ ] Wire damage calculator @dev #combat\n",
+        encoding="utf-8",
+    )
+    (root / "src").mkdir(exist_ok=True)
+    (root / "src" / "combat.py").write_text(
+        "def dead_damage_calc(x: int) -> int:\n"
+        "    return x * 2\n",
+        encoding="utf-8",
+    )
+    indexer.index_file(conn, root, doc)
+    conn.commit()
+
+    # 1. Refused when verify_symbols has 0 callers
+    refused = publish_mod.set_status(
+        root, conn, status="done", task="Wire damage calculator",
+        verify_symbols=["dead_damage_calc"],
+    )
+    assert refused["changed"] is False
+    assert refused["refused"] is True
+    assert "- [ ] Wire damage calculator" in doc.read_text(encoding="utf-8")
+
+    # 2. Wire up the symbol, then check off the task
+    (root / "src" / "combat.py").write_text(
+        "def dead_damage_calc(x: int) -> int:\n"
+        "    return x * 2\n\n"
+        "def run_turn():\n"
+        "    return dead_damage_calc(5)\n",
+        encoding="utf-8",
+    )
+    done = publish_mod.set_status(
+        root, conn, status="done", task="Wire damage calculator",
+        verify_symbols=["dead_damage_calc"],
+    )
+    assert done["changed"] is True
+    assert done["verified"] is True
+    assert "- [x] Wire damage calculator" in doc.read_text(encoding="utf-8")
+
+    # 3. Reopen the task (`- [x]` -> `- [ ]`)
+    reopened = publish_mod.set_status(
+        root, conn, status="open", task="Wire damage calculator",
+    )
+    assert reopened["changed"] is True
+    assert reopened["verified"] is True
+    assert "- [ ] Wire damage calculator" in doc.read_text(encoding="utf-8")
+

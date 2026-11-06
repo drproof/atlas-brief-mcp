@@ -38,13 +38,24 @@ FUNC_RE = re.compile(
     r"[ \t]*\((?P<args>[^)]*)\)[^\n:]*)",
     re.MULTILINE,
 )
-# GDScript `class_name Foo`, Python/TS/Java/C# `class Foo` / `export class Foo`.
+# GDScript `class_name Foo`, Python/TS/Java/C#/Rust/Kotlin/Swift/Go type definitions.
 CLASS_RE = re.compile(
-    r"^[ \t]*(?:class_name[ \t]+"
-    r"|(?:export[ \t]+)?(?:default[ \t]+)?(?:abstract[ \t]+)?class[ \t]+)"
-    r"(?P<name>[A-Za-z_]\w*)",
+    r"^[ \t]*(?:class_name[ \t]+(?P<gd_name>[A-Za-z_]\w*)"
+    r"|(?:(?:export|default|public|private|protected|internal|fileprivate|open|pub(?:\([^)\n]+\))?"
+    r"|abstract|sealed|final|static|partial|data|value)[ \t]+)*"
+    r"(?:class|struct|interface|trait|enum|record)[ \t]+(?P<name>[A-Za-z_]\w*)"
+    r"|type[ \t]+(?P<go_name>[A-Za-z_]\w*)[ \t]+(?:struct|interface)\b)",
     re.MULTILINE,
 )
+
+
+def _class_match_name(match: re.Match) -> str:
+    return (
+        match.group("name")
+        or match.group("gd_name")
+        or match.group("go_name")
+        or ""
+    )
 # Lines that *define* the symbol rather than using it.
 DEF_LINE_RE = re.compile(r"^[ \t]*(?:static[ \t]+)?func[ \t]+(?P<name>[A-Za-z_]\w*)")
 SIGNAL_DECL_RE = re.compile(r"^[ \t]*signal[ \t]+(?P<name>[A-Za-z_]\w*)")
@@ -97,6 +108,7 @@ def find(root, symbol: str, limit: int = 20, exact: bool = False) -> list[dict]:
         if needle not in text.lower():
             continue
         rel = path.relative_to(root).as_posix()
+        seen_defs: set[tuple[int, str]] = set()
         for pattern in DEF_PATTERNS:
             for match in pattern.finditer(text):
                 name = match.group("name")
@@ -106,12 +118,16 @@ def find(root, symbol: str, limit: int = 20, exact: bool = False) -> list[dict]:
                     continue
                 if exact and name != symbol:
                     continue
+                line_no = text.count("\n", 0, match.start()) + 1
+                if (line_no, name) in seen_defs:
+                    continue
+                seen_defs.add((line_no, name))
                 line_start = text.rfind("\n", 0, match.start()) + 1
                 line_end = text.find("\n", match.start())
                 raw_line = text[line_start: line_end if line_end != -1 else len(text)]
                 hits.append({
                     "path": rel,
-                    "line": text.count("\n", 0, match.start()) + 1,
+                    "line": line_no,
                     "kind": "func",
                     "symbol": name,
                     # Without trailing colon/brace: the signature, not the line.
@@ -119,18 +135,23 @@ def find(root, symbol: str, limit: int = 20, exact: bool = False) -> list[dict]:
                     "signature": raw_line.strip().rstrip(":{").strip(),
                 })
         for match in CLASS_RE.finditer(text):
-            name = match.group("name")
-            if needle not in name.lower():
+            name = _class_match_name(match)
+            if not name or needle not in name.lower():
                 continue
             if exact and name != symbol:
                 continue
+            line_no = text.count("\n", 0, match.start()) + 1
+            if (line_no, name) in seen_defs:
+                continue
+            seen_defs.add((line_no, name))
+            line_end = text.find("\n", match.start())
             hits.append({
                 "path": rel,
-                "line": text.count("\n", 0, match.start()) + 1,
+                "line": line_no,
                 "kind": "class",
                 "symbol": name,
                 "signature": text[text.rfind("\n", 0, match.start()) + 1:
-                                  text.find("\n", match.start())].strip().rstrip(":{").strip(),
+                                  line_end if line_end != -1 else len(text)].strip().rstrip(":{").strip(),
             })
         if len(hits) >= limit:
             break
@@ -145,7 +166,7 @@ def _is_definition_line(line: str, needle: str) -> bool:
         if match and match.group("name") == needle:
             return True
     match = CLASS_RE.match(line)
-    return bool(match and match.group("name") == needle)
+    return bool(match and _class_match_name(match) == needle)
 
 
 def references(root, symbol: str, limit: int = 20) -> dict:
@@ -187,7 +208,7 @@ def references(root, symbol: str, limit: int = 20) -> dict:
             if not word.search(line):
                 continue
             stripped = line.strip()
-            if stripped.startswith("#"):
+            if stripped.startswith(("#", "//")):
                 continue
             # The definition line itself is not a usage — in any language,
             # not only for `func`.
@@ -199,7 +220,7 @@ def references(root, symbol: str, limit: int = 20) -> dict:
             # `class_name Foo` declares the class — it does not use it.
             # Without this check, every dead class would pass the wiring gate.
             class_match = CLASS_RE.match(line)
-            if class_match and class_match.group("name") == needle:
+            if class_match and _class_match_name(class_match) == needle:
                 continue
 
             entry = {"path": rel, "line": number, "text": stripped[:160]}

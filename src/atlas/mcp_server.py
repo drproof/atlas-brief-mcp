@@ -529,7 +529,7 @@ def atlas_publish(
 
 @mcp.tool(
     annotations=ToolAnnotations(
-        title="Update Existing Work-Order Status",
+        title="Update Work-Order or Checkbox Task Status",
         readOnlyHint=False,
         destructiveHint=False,
         idempotentHint=True,
@@ -539,17 +539,21 @@ def atlas_publish(
 @_health
 def atlas_set_status(
     wo: Annotated[
-        int,
+        int | None,
         Field(
+            default=None,
             ge=1,
-            description="Existing Work Order number to update (positive integer, e.g. 8 for 'Work Order 8').",
+            description=(
+                "Existing Work Order number to update (positive integer, e.g. 8 for 'Work Order 8'). "
+                "Provide either `wo` or `task`."
+            ),
         ),
-    ],
+    ] = None,
     status: Annotated[
         Literal["done", "open"],
         Field(
             default="done",
-            description="New status for the Work Order: 'done' (`✅ DONE`, default) or 'open' (`⬜ OPEN`).",
+            description="New status: 'done' (`✅ DONE` / `- [x]`, default) or 'open' (`⬜ OPEN` / `- [ ]`).",
         ),
     ] = "done",
     verify_symbols: Annotated[
@@ -562,25 +566,37 @@ def atlas_set_status(
             ),
         ),
     ] = None,
+    task: Annotated[
+        str | None,
+        Field(
+            default=None,
+            min_length=1,
+            description=(
+                "Substring identifying a Markdown checkbox item (`- [ ] ...`) to toggle between "
+                "`- [ ]` ('open') and `- [x]` ('done') when `wo` is omitted (e.g. 'Balance damage formula')."
+            ),
+        ),
+    ] = None,
 ) -> str:
-    """Flip the status marker (`⬜ OPEN` <-> `✅ DONE`) of an already documented Work Order in place.
+    """Flip the status marker of an existing Work Order (`⬜ OPEN` <-> `✅ DONE`) or Markdown checkbox task (`- [ ]` <-> `- [x]`).
 
-    Use this tool as the final step when completing an existing open Work Order. To append a brand-new
-    Work Order entry that is not yet in the document, use `atlas_publish` instead.
+    Use this tool as the final step when completing an existing open Work Order (`wo=N`) or a checkbox
+    task from `atlas_tasks` (`task='...'`). To append a brand-new Work Order entry that is not yet in the
+    document, use `atlas_publish` instead.
 
     Behavior & Output:
-    - Pre-write wiring gate: when `status='done'`, checks that all symbols in `verify_symbols` and
-      `.atlas/wo-symbols.yml` are defined and have at least one caller/reference. Refuses with
+    - Pre-write wiring gate: when `status='done'`, checks that all symbols in `verify_symbols` (and
+      `.atlas/wo-symbols.yml`) are defined and have at least one caller/reference. Refuses with
       `{changed: false, refused: true, refusal: "..."}` if any symbol is unwired.
-    - Verified in-place update: updates the status marker in the local Markdown file or active Google Doc tab,
-      verifies the change by reading back, and returns JSON `{changed, verified, wo, status}`.
+    - Verified in-place update: updates the status marker or checkbox in the local Markdown file (or active
+      Google Doc tab for Work Orders), verifies by reading back, and returns JSON `{changed, verified, status}`.
     """
     from . import gdocs, publish as publish_mod
 
     root, conn = _fresh()
     try:
         result = publish_mod.set_status(root, conn, wo, status=status,
-                                        verify_symbols=verify_symbols)
+                                        verify_symbols=verify_symbols, task=task)
     except (gdocs.SyncError, ValueError) as error:
         return json.dumps({"changed": False, "error": str(error)}, ensure_ascii=False)
     return json.dumps(result, ensure_ascii=False)

@@ -229,7 +229,7 @@ def _tab_text_of(docs, document_id: str, tab_id: str = "") -> str:
     return "\n".join(texts.values())
 
 
-def _attachment_gate(root: Path, wo: int, status: str,
+def _attachment_gate(root: Path, wo: int | None, status: str,
                      verify_symbols: list[str] | None,
                      dry_run: bool) -> tuple[dict, str]:
     """Check symbol wiring before writing. Returns (payload, refusal).
@@ -242,9 +242,10 @@ def _attachment_gate(root: Path, wo: int, status: str,
     if status.lower() not in {"done", "erledigt"}:
         return {}, ""
 
+    recorded = verify.load_wo_symbols(root).get(int(wo), []) if wo is not None else []
     symbols = list(dict.fromkeys(
         [str(s) for s in (verify_symbols or []) if str(s).strip()]
-        + verify.load_wo_symbols(root).get(int(wo), [])
+        + recorded
     ))
     if not symbols:
         return {
@@ -517,13 +518,14 @@ def _status_line_re(wo: int):
 def set_status(
     root: Path,
     conn,
-    wo: int,
+    wo: int | None = None,
     status: str = "done",
     dry_run: bool = False,
     client_secret: str | None = None,
     verify_symbols: list[str] | None = None,
+    task: str | None = None,
 ) -> dict:
-    """Change the status of an already documented work order (✅ ⇄ ⬜).
+    """Change the status of an already documented work order (✅ ⇄ ⬜) or checkbox task (`- [ ]` ⇄ `- [x]`).
 
     Uses `replaceAllText` rather than character offsets: matches the full
     status prefix ('Work Order 9 — ✅ ERLEDIGT'), which is unique in the document.
@@ -534,6 +536,30 @@ def set_status(
     new_mark = gdocs.STATUS_MARK.get(status.lower())
     if new_mark is None:
         raise ValueError(f"Unknown status '{status}' (allowed: done, open)")
+
+    if wo is None and not (task and str(task).strip()):
+        raise ValueError("Provide either 'wo' (Work Order number) or 'task' (checkbox text)")
+
+    if wo is None and task and str(task).strip():
+        from . import localwrite
+
+        gate, refusal = _attachment_gate(root, None, status, verify_symbols, dry_run)
+        if refusal:
+            audit.log(root, "set_status_refused", task=task, status=status,
+                      symbols=[e["symbol"] for e in gate["verify"].get("failed", [])],
+                      refused=True, written=False, verified=False)
+            return {
+                "changed": False,
+                "refused": True,
+                "refusal": refusal,
+                "task": str(task).strip(),
+                "status": status.lower(),
+                **gate,
+            }
+        result = localwrite.set_task_status(
+            root, conn, str(task).strip(), status, dry_run=dry_run
+        )
+        return {**result, **gate}
 
     # Flipping a work order to ✅ is also an acceptance — run the same gate as above.
     gate, refusal = _attachment_gate(root, wo, status, verify_symbols, dry_run)

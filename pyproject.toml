@@ -1,6 +1,6 @@
 [project]
 name = "atlas-brief-mcp"
-version = "0.2.1"
+version = "0.2.2"
 description = "Local MCP index for project documentation: token-saving BM25 search, verified status lines, and multi-language code wiring gate"
 readme = "README.md"
 license = { file = "LICENSE" }

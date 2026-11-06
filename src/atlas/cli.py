@@ -108,11 +108,14 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument("--json", action="store_true", default=argparse.SUPPRESS,
                         help="emit raw JSON")
 
+    from . import __version__
+
     parser = argparse.ArgumentParser(
         prog="atlas",
         description="atlas: project and design documentation, searchable for agents and terminals.",
         parents=[common],
     )
+    parser.add_argument("-V", "--version", action="version", version=f"atlas {__version__}")
     sub = parser.add_subparsers(dest="command", required=True)
 
     p = sub.add_parser("index", parents=[common], help="rebuild the index")
@@ -173,8 +176,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--verify-symbols", default="",
                    help="comma-separated symbols this order built (wiring gate)")
 
-    p = sub.add_parser("set-status", parents=[common], help="change the status of a work order")
-    p.add_argument("--wo", type=int, required=True)
+    p = sub.add_parser("set-status", parents=[common],
+                       help="change the status of a work order or checkbox task")
+    p.add_argument("--wo", type=int, default=None, help="work order number")
+    p.add_argument("--task", default=None, help="checkbox task substring (- [ ] <-> - [x])")
     p.add_argument("--status", required=True, choices=["done", "open"])
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--verify-symbols", default="")
@@ -335,6 +340,7 @@ def main(argv: list[str] | None = None) -> int:
             result = publish_mod.set_status(
                 root, conn, args.wo, status=args.status, dry_run=args.dry_run,
                 verify_symbols=_symbols(args.verify_symbols),
+                task=args.task,
             )
         except (gdocs.SyncError, ValueError) as error:
             print(f"Error: {error}", file=sys.stderr)

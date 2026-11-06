@@ -220,3 +220,97 @@ def test_python_definition_is_not_counted_as_reference(tmp_path):
 
     assert result["call_count"] == 0
     assert result["ref_count"] == 0
+
+
+def test_finds_all_nine_advertised_languages_and_checks_wiring(tmp_path):
+    """Verify definition and caller/reference detection across all 9 supported languages."""
+    root = tmp_path / "polyglot"
+    src = root / "src"
+    src.mkdir(parents=True)
+
+    # 1. Python async def
+    (src / "worker.py").write_text(
+        "async def process_job_queue(batch: int) -> int:\n"
+        "    return batch\n",
+        encoding="utf-8",
+    )
+    # 2. Rust pub async fn + struct
+    (src / "engine.rs").write_text(
+        "pub struct DamageReport {\n"
+        "    pub total: i32,\n"
+        "}\n"
+        "pub(crate) async fn compute_blast_radius<T>(power: i32) -> i32 {\n"
+        "    // compute_blast_radius(0) in a comment must not count\n"
+        "    power * 2\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    # 3. Go receiver method + struct
+    (src / "server.go").write_text(
+        "package main\n"
+        "type CombatServer struct {}\n"
+        "func (s *CombatServer) DispatchTurn(id int) error {\n"
+        "    return nil\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    # 4. C# method + class
+    (src / "UnitController.cs").write_text(
+        "public class UnitController {\n"
+        "    public async Task<int> ApplyArmorMitigation(int rawDamage) {\n"
+        "        return rawDamage;\n"
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    # 5. Java method
+    (src / "QuestService.java").write_text(
+        "public class QuestService {\n"
+        "    protected static boolean evaluateQuestStage(String id) {\n"
+        "        return true;\n"
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    # 6. Kotlin suspend fun
+    (src / "DialogueRunner.kt").write_text(
+        "class DialogueRunner {\n"
+        "    suspend fun resolveBranchCondition(nodeId: String): Boolean {\n"
+        "        return true\n"
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+    # 7. Swift public func
+    (src / "HudPresenter.swift").write_text(
+        "public struct HudPresenter {\n"
+        "    public mutating func refreshHealthBar(current: Int) {\n"
+        "    }\n"
+        "}\n",
+        encoding="utf-8",
+    )
+
+    expected_symbols = [
+        "process_job_queue",
+        "DamageReport",
+        "compute_blast_radius",
+        "CombatServer",
+        "DispatchTurn",
+        "UnitController",
+        "ApplyArmorMitigation",
+        "evaluateQuestStage",
+        "resolveBranchCondition",
+        "HudPresenter",
+        "refreshHealthBar",
+    ]
+    for sym in expected_symbols:
+        hits = code.find(root, sym, exact=True)
+        assert len(hits) == 1, f"Expected to find {sym}, got {hits}"
+        refs = code.references(root, sym)
+        assert refs["call_count"] == 0, f"Expected 0 calls for unwired {sym}, got {refs}"
+        if sym == "CombatServer":
+            # Referenced as receiver `(s *CombatServer)` on DispatchTurn
+            assert refs["ref_count"] == 1
+        else:
+            assert refs["ref_count"] == 0, f"Expected 0 refs for unwired {sym}, got {refs}"
+

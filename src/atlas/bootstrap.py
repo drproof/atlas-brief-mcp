@@ -52,6 +52,9 @@ SKIP_KEYWORDS = {
     # Control structures — look like methods, but aren't
     "if", "for", "while", "switch", "catch", "else", "do", "try", "with",
     "return", "function", "constructor", "super", "this", "new", "typeof",
+    "class", "struct", "interface", "enum", "record", "trait", "impl",
+    "namespace", "package", "import", "using", "throw", "await", "yield",
+    "nameof", "sizeof", "lock", "synchronized", "main",
     # Godot virtuals — called by the engine
     "_ready", "_init", "_process", "_physics_process", "_input",
     "_unhandled_input", "_unhandled_key_input", "_enter_tree", "_exit_tree",
@@ -60,16 +63,27 @@ SKIP_KEYWORDS = {
     "render", "ngOnInit", "ngOnDestroy", "componentDidMount", "componentWillUnmount",
 }
 DEF_PATTERNS = (
-    # GDScript / Python / Rust
+    # GDScript / Python / Rust / Swift / Kotlin:
+    # [modifiers...] (func|def|fn|fun) [<TypeParams>] name [<TypeParams>] (
     re.compile(
-        r"^[ \t]*(?:static[ \t]+)?(?:func|def|fn)[ \t]+(?P<name>[A-Za-z_]\w*)[ \t]*\(",
+        r"^[ \t]*(?:(?:pub(?:\([^)\n]+\))?|public|private|protected|internal|fileprivate|open"
+        r"|static|async|suspend|inline|override|mutating|nonmutating|final|unsafe|const"
+        r"|extern(?:[ \t]+\"[^\"]*\")?|operator|tailrec)[ \t]+)*"
+        r"(?:func|def|fn|fun)[ \t]+"
+        r"(?:<[^>\n]+>[ \t]+)*"
+        r"(?P<name>[A-Za-z_]\w*)[ \t]*(?:<[^>\n]+>)?[ \t]*\(",
         re.MULTILINE,
     ),
-    # JS/TS: [export [default]] [async] function name( — the closing parenthesis
+    # Go functions & receiver methods: func (r *Recv) Name[T any](
+    re.compile(
+        r"^[ \t]*func[ \t]+(?:\([^)\n]+\)[ \t]+)?(?P<name>[A-Za-z_]\w*)[ \t]*(?:\[[^\]\n]+\])?[ \t]*\(",
+        re.MULTILINE,
+    ),
+    # JS/TS: [export [default]] [async] function name[<T>]( — the closing parenthesis
     # may be on a later line (multi-line TS signatures).
     re.compile(
         r"^[ \t]*(?:export[ \t]+(?:default[ \t]+)?)?(?:async[ \t]+)?function[ \t]*\*?[ \t]*"
-        r"(?P<name>[A-Za-z_$][\w$]*)[ \t]*\(",
+        r"(?P<name>[A-Za-z_$][\w$]*)[ \t]*(?:<[^>\n]+>)?[ \t]*\(",
         re.MULTILINE,
     ),
     # JS/TS: [export] const name = [Wrapper<…>(] [async] (…) =>  |  = function(
@@ -80,6 +94,14 @@ DEF_PATTERNS = (
         r"(?P<name>[A-Za-z_$][\w$]*)[ \t]*(?::[^=\n]+)?=[ \t]*"
         r"(?:[A-Za-z_$][\w$.]*(?:<[^>\n]*>)?\([ \t]*)?"
         r"(?:async[ \t]+)?(?:\([^)\n]*\)[^\n=]*?=>|function[ \t]*\()",
+        re.MULTILINE,
+    ),
+    # C# / Java typed methods: require at least one access/method modifier + return type + Name(
+    re.compile(
+        r"^[ \t]*(?:(?:public|private|protected|internal|static|virtual|override|abstract"
+        r"|async|sealed|final|synchronized|extern|unsafe|partial|readonly)[ \t]+)+"
+        r"[A-Za-z_][\w.<>,\[\]\?]*[ \t]+"
+        r"(?P<name>[A-Za-z_]\w*)[ \t]*(?:<[^>\n]+>)?[ \t]*\(",
         re.MULTILINE,
     ),
 )
@@ -162,7 +184,10 @@ def _has_decorator(lines: list[str], start: int) -> bool:
         current = lines[index]
         if not current.strip():
             return False  # blank line separates decorator from definition
-        if current.lstrip().startswith("@"):
+        stripped_above = current.lstrip()
+        if stripped_above.startswith(("@", "#[")) or (
+            stripped_above.startswith("[") and stripped_above.rstrip().endswith("]")
+        ):
             return True
         if len(current) - len(current.lstrip()) < def_indent:
             return False

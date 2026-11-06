@@ -23,6 +23,10 @@ _OLD_MARK_RE = re.compile(
     r"|☐\s*(?:OFFEN|OPEN))\s*",
     re.IGNORECASE,
 )
+_TASK_RE = re.compile(
+    r"^(?P<prefix>[ \t]*(?:[-*+]|\d+\.)[ \t]+)\[(?P<mark>[ xX])\](?P<rest>[ \t]+.*)$",
+    re.MULTILINE,
+)
 
 
 def _line_re(wo: int) -> re.Pattern:
@@ -145,6 +149,88 @@ def set_status(root: Path, conn, wo: int, status: str,
 
     audit.log(root, "set_status", wo=wo, status=status, source="local",
               path=payload["path"], verified=verified)
+    return payload
+
+
+def find_task_line(root: Path, task_query: str) -> tuple[Path, str, re.Match] | None:
+    """Return the file, full text, and regex match for a Markdown checkbox task."""
+    needle = (task_query or "").strip().casefold()
+    if not needle:
+        return None
+    for path in targets(root):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        for match in _TASK_RE.finditer(text):
+            if needle in match.group("rest").casefold():
+                return path, text, match
+    return None
+
+
+def set_task_status(root: Path, conn, task: str, status: str,
+                    dry_run: bool = False) -> dict:
+    """Toggle a Markdown checkbox task (`- [ ]` <-> `- [x]`) in local documentation."""
+    from . import audit, indexer
+
+    norm = status.lower()
+    if norm not in STATUS_MARK:
+        raise ValueError(f"Unknown status '{status}' (allowed: done, open)")
+    target_char = "x" if norm == "done" else " "
+
+    found = find_task_line(root, task)
+    if found is None:
+        return {
+            "written": False,
+            "changed": False,
+            "verified": False,
+            "reason": f"Checkbox task matching '{task}' is not in any local documentation file.",
+            "source": "local",
+        }
+
+    path, text, match = found
+    rel_path = path.relative_to(root).as_posix() if path.is_relative_to(root) else str(path)
+    old_line = match.group(0)
+    new_line = f"{match.group('prefix')}[{target_char}]{match.group('rest')}"
+    if match.group("mark").lower() == target_char:
+        return {
+            "written": False,
+            "changed": False,
+            "unchanged": True,
+            "verified": True,
+            "task": task,
+            "status": norm,
+            "source": "local",
+            "path": rel_path,
+        }
+
+    payload = {
+        "written": not dry_run,
+        "changed": not dry_run,
+        "dry_run": dry_run,
+        "task": task,
+        "status": norm,
+        "source": "local",
+        "path": rel_path,
+        "before": old_line.strip()[:120],
+        "after": new_line.strip()[:120],
+    }
+    if dry_run:
+        return payload
+
+    _write_atomic(path, text[: match.start()] + new_line + text[match.end():])
+
+    confirmed = find_task_line(root, task)
+    verified = bool(confirmed and confirmed[2].group("mark").lower() == target_char)
+    payload["verified"] = verified
+    if not verified:
+        payload["warning"] = "Checkbox was written, but could not be read back from the file."
+
+    indexer.index_file(conn, root, path)
+    conn.commit()
+
+    audit.log(root, "set_task_status", task=task, status=status, source="local",
+              path=rel_path, verified=verified)
     return payload
 
 

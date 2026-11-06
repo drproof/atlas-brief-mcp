@@ -1,6 +1,7 @@
 # atlas
 
 [![Tests](https://github.com/drproof/atlas-brief-mcp/actions/workflows/tests.yml/badge.svg)](https://github.com/drproof/atlas-brief-mcp/actions/workflows/tests.yml)
+[![PyPI version](https://img.shields.io/pypi/v/atlas-brief-mcp.svg)](https://pypi.org/project/atlas-brief-mcp/)
 [![atlas-brief-mcp MCP server – quality and maintenance score on Glama](https://glama.ai/mcp/servers/drproof/atlas-brief-mcp/badges/score.svg)](https://glama.ai/mcp/servers/drproof/atlas-brief-mcp)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
@@ -97,20 +98,18 @@ You can close a chat mid-task and open a new one. The next session asks three qu
 
 Requires **Python 3.10+** and [uv](https://docs.astral.sh/uv/) (or `pipx`). No Google account, no API key, and no network access required.
 
-### 1. Install
+### 1. Install from PyPI
 
 ```bash
 # Recommended (installs `atlas` globally in an isolated environment)
-uv tool install git+https://github.com/drproof/atlas-brief-mcp
+uv tool install atlas-brief-mcp
 
-# Or with pipx
-pipx install git+https://github.com/drproof/atlas-brief-mcp
+# Or with pipx / pip
+pipx install atlas-brief-mcp
+pip install atlas-brief-mcp
 
-# Or from a local clone for development
-git clone https://github.com/drproof/atlas-brief-mcp
-cd atlas-brief-mcp
-uv sync
-uv run atlas --help
+# Or run directly without installing via uvx
+uvx --from atlas-brief-mcp atlas --help
 ```
 
 > **PATH note:** If `atlas` is not found after `uv tool install`, run `uv tool update-shell` once (or add `~/.local/bin` / `%USERPROFILE%\.local\bin` to your `PATH`).
@@ -178,23 +177,25 @@ atlas status                             # Reads the verified state
 
 The server speaks standard MCP over `stdio`. Because `ATLAS_ROOT=.` resolves relative to the client's working directory, **one installation serves every project**.
 
-### 1. Claude Code / Cursor / Windsurf (`.mcp.json`)
+### 1. Zero-Install via `uvx` (Claude Code / Cursor / Windsurf / Antigravity)
 
-Place this in your project root (or let `atlas init` create it):
+Runs directly from PyPI without pre-installing:
 
 ```json
 {
   "mcpServers": {
     "atlas": {
-      "command": "atlas",
-      "args": ["serve"],
+      "command": "uvx",
+      "args": ["--from", "atlas-brief-mcp", "atlas", "serve"],
       "env": { "ATLAS_ROOT": "." }
     }
   }
 }
 ```
 
-### 2. Google Antigravity (`~/.gemini/config/mcp_config.json`)
+### 2. Local CLI Install (`.mcp.json` / `~/.gemini/config/mcp_config.json`)
+
+If you installed `atlas` via `uv tool install atlas-brief-mcp` (or let `atlas init` create `.mcp.json`):
 
 ```json
 {

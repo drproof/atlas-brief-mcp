@@ -1,12 +1,12 @@
-"""`atlas init`: ein Repository ohne Doku in einen indexierbaren Zustand bringen.
+"""`atlas init`: bring an undocumented repository into an indexable state.
 
-Kein LLM, kein Netzwerk — ein Dateisystem-Scan, eine Tokenschätzung und der
-bestehende Symbol-Scanner. Das Ergebnis ist ein Markdown-Dokument, das `lint`
-fehlerfrei besteht, plus die Regeldateien, die ein Coding-Agent braucht.
+No LLM, no network — a filesystem scan, a token estimate, and the existing
+symbol scanner. The output is a Markdown document that passes `lint` cleanly,
+plus the rule files a coding agent needs.
 
-Grundsatz: **nichts überschreiben.** Wer eine `AGENTS.md` hat, behält sie.
-`init` ergänzt Lücken und meldet, was schon da war — ein Bootstrap, der
-bestehende Arbeit plattmacht, wird genau einmal benutzt.
+Principle: **never overwrite.** Anyone who already has an `AGENTS.md` keeps it.
+`init` fills in gaps and reports what was already there — a bootstrap that wipes
+out existing work is used exactly once.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ SKIP_DIRS = {
 }
 HOTSPOT_TOKENS = 10_000
 UNWIRED_MIN_LINES = 15
-TOKENS_PER_CHAR = 3.5  # konservative Schätzung; konsistent mit dem Rest des Tools
+TOKENS_PER_CHAR = 3.5  # conservative estimate; consistent with the rest of the tool
 
 
 def estimate_tokens(text: str) -> int:
@@ -33,11 +33,11 @@ def estimate_tokens(text: str) -> int:
 
 
 def iter_source_files(root: Path):
-    """Quelldateien, ohne in gesperrte oder riesige Ordner abzusteigen.
+    """Yield source files without descending into excluded or huge directories.
 
-    Bewusst `os.walk` statt `rglob`: `rglob` wirft bei einem einzigen
-    unlesbaren Verzeichnis eine Exception und bricht den ganzen Scan ab. Ein
-    Bootstrap, der an einem fremden `node_modules` scheitert, ist unbrauchbar.
+    Deliberately uses `os.walk` instead of `rglob`: `rglob` raises an exception
+    on a single unreadable directory and aborts the entire scan. A bootstrap that
+    fails on a foreign `node_modules` is unusable.
     """
     for dirpath, dirnames, filenames in os.walk(root, onerror=lambda _e: None):
         dirnames[:] = sorted(
@@ -49,14 +49,14 @@ def iter_source_files(root: Path):
 
 
 SKIP_KEYWORDS = {
-    # Kontrollstrukturen — sehen wie Methoden aus, sind keine
+    # Control structures — look like methods, but aren't
     "if", "for", "while", "switch", "catch", "else", "do", "try", "with",
     "return", "function", "constructor", "super", "this", "new", "typeof",
-    # Godot-Virtuals — die Engine ruft sie
+    # Godot virtuals — called by the engine
     "_ready", "_init", "_process", "_physics_process", "_input",
     "_unhandled_input", "_unhandled_key_input", "_enter_tree", "_exit_tree",
     "_draw", "_notification", "_to_string", "__init__", "__str__", "__repr__",
-    # Framework-Hooks, die das Framework ruft
+    # Framework hooks called by the framework
     "render", "ngOnInit", "ngOnDestroy", "componentDidMount", "componentWillUnmount",
 }
 DEF_PATTERNS = (
@@ -65,16 +65,16 @@ DEF_PATTERNS = (
         r"^[ \t]*(?:static[ \t]+)?(?:func|def|fn)[ \t]+(?P<name>[A-Za-z_]\w*)[ \t]*\(",
         re.MULTILINE,
     ),
-    # JS/TS: [export [default]] [async] function name( — die schließende Klammer
-    # darf auf einer späteren Zeile stehen (mehrzeilige TS-Signaturen).
+    # JS/TS: [export [default]] [async] function name( — the closing parenthesis
+    # may be on a later line (multi-line TS signatures).
     re.compile(
         r"^[ \t]*(?:export[ \t]+(?:default[ \t]+)?)?(?:async[ \t]+)?function[ \t]*\*?[ \t]*"
         r"(?P<name>[A-Za-z_$][\w$]*)[ \t]*\(",
         re.MULTILINE,
     ),
     # JS/TS: [export] const name = [Wrapper<…>(] [async] (…) =>  |  = function(
-    # Der Wrapper-Part deckt React.memo(, forwardRef<…>( und ähnliche Higher-Order-
-    # Komponenten ab — sonst fehlen ausgerechnet die komplexen UI-Komponenten.
+    # The wrapper part covers React.memo(, forwardRef<…>( and similar higher-order
+    # components — otherwise the complex UI components are missed.
     re.compile(
         r"^[ \t]*(?:export[ \t]+(?:default[ \t]+)?)?(?:const|let|var)[ \t]+"
         r"(?P<name>[A-Za-z_$][\w$]*)[ \t]*(?::[^=\n]+)?=[ \t]*"
@@ -84,8 +84,8 @@ DEF_PATTERNS = (
     ),
 )
 
-# Dateien, die ein Bundler oder Router von außen mountet: `export default`
-# braucht dort keinen Aufruf im eigenen Code.
+# Files mounted externally by a bundler or router: `export default`
+# there does not need a caller in user code.
 ENTRY_FILES = {
     "app.tsx", "app.jsx", "app.ts", "app.js",
     "main.tsx", "main.jsx", "main.ts", "main.js",
@@ -94,12 +94,12 @@ ENTRY_FILES = {
     "route.ts", "route.tsx", "not-found.tsx", "error.tsx", "loading.tsx",
 }
 
-# Ab dieser Rumpflänge gilt eine Funktion als Kern-Symbol einer Domäne.
+# Minimum body length for a function to count as a core domain symbol.
 CORE_SYMBOL_MIN_LINES = 8
 
 
 def _iter_defs(text: str):
-    """(name, startzeile, definitionszeile) für alle erkannten Funktionen."""
+    """Yield (name, start_line, def_line) for all recognized functions."""
     seen: set[tuple[str, int]] = set()
     for pattern in DEF_PATTERNS:
         for match in pattern.finditer(text):
@@ -118,12 +118,12 @@ def _iter_defs(text: str):
 
 
 def _func_body_end(lines: list[str], start: int) -> int:
-    """Letzte Zeile des Rumpfs, der in `start` beginnt (0-basiert).
+    """Return the last line of the function body starting at `start` (0-based).
 
-    Maßstab ist die Einrückung der **Definitionszeile**, nicht Spalte 0. Der
-    frühere Spalte-0-Test war nur für Top-Level-Code richtig: In einer
-    Python-Klasse steht keine Methode auf Spalte 0, also lief jede Methode bis
-    zum Ende der ganzen Klasse und galt als beliebig lang.
+    The reference is the indentation of the **definition line**, not column 0. The
+    earlier column-0 check only worked for top-level code: inside a Python class
+    no method starts at column 0, so every method ran to the end of the entire
+    class and was treated as arbitrarily long.
     """
     line = lines[start]
     def_indent = len(line) - len(line.lstrip())
@@ -135,13 +135,13 @@ def _func_body_end(lines: list[str], start: int) -> int:
         indent = len(current) - len(current.lstrip())
         stripped = current.strip()
         if indent <= def_indent:
-            # Fortsetzung einer mehrzeiligen Signatur — erst danach beginnt der
-            # Rumpf. `): RevenueResult {`, `) -> dict:`, `) => {`, oder Allman-
-            # Stil mit `{` auf eigener Zeile.
+            # Continuation of a multi-line signature — the body starts after it.
+            # `): RevenueResult {`, `) -> dict:`, `) => {`, or Allman style with
+            # `{` on its own line.
             if stripped.startswith(")") or stripped in ("{", "):"):
                 end = offset
                 continue
-            # Die schließende Klammer einer TS/C#-Methode gehört noch dazu.
+            # The closing brace of a TS/C# method still belongs to the function.
             if stripped in ("}", "};", "});") and indent == def_indent:
                 end = offset
             break
@@ -150,10 +150,10 @@ def _func_body_end(lines: list[str], start: int) -> int:
 
 
 def _has_decorator(lines: list[str], start: int) -> bool:
-    """Steht über der Definition ein Dekorator — auch ein mehrzeiliger?
+    """Check whether a decorator precedes the definition — including multi-line ones.
 
-    `@app.post(\\n "/api",\\n)\\ndef handler():` — die Zeile direkt über `def`
-    ist `)`. Wer nur `lines[start-1]` prüft, hält den Endpunkt für unverdrahtet.
+    `@app.post(\\n "/api",\\n)\\ndef handler():` — the line right above `def`
+    is `)`. Checking only `lines[start-1]` would treat the endpoint as unwired.
     """
     line = lines[start]
     def_indent = len(line) - len(line.lstrip())
@@ -161,7 +161,7 @@ def _has_decorator(lines: list[str], start: int) -> bool:
     while index >= 0:
         current = lines[index]
         if not current.strip():
-            return False  # Leerzeile trennt Dekorator und Definition
+            return False  # blank line separates decorator from definition
         if current.lstrip().startswith("@"):
             return True
         if len(current) - len(current.lstrip()) < def_indent:
@@ -171,12 +171,12 @@ def _has_decorator(lines: list[str], start: int) -> bool:
 
 
 def _core_symbols(text: str, limit: int = 12) -> list[str]:
-    """Die größten Funktionen einer Datei — nicht die ersten.
+    """Return the largest functions in a file — not the first ones.
 
-    Die ersten zwölf `func`-Zeilen einer GDScript-Datei sind `_ready`, `get_int`,
-    `get_float`, `next_int`: Virtuals und triviale Getter. Als „Kern-Symbole"
-    sind sie wertlos. Interessant ist, wo Logik steht, und die steht in den
-    langen Funktionen.
+    The first twelve `func` lines of a GDScript file are `_ready`, `get_int`,
+    `get_float`, `next_int`: virtuals and trivial getters. As "core symbols"
+    they are useless. What matters is where logic lives, and it lives in the
+    long functions.
     """
     lines = text.splitlines()
     sized: list[tuple[int, str]] = []
@@ -205,17 +205,17 @@ SUBPROJECT_MARKERS = (
 
 
 def _detect_subproject(domain_dir: Path) -> str:
-    """Trägt dieser Ordner ein eigenes Projekt? Dann ist er eine Teilkopie.
+    """Check whether this folder hosts its own project (i.e., a partial copy).
 
-    Ein Unterordner mit `project.godot`, `package.json` oder `.git` ist ein
-    eigenes Repository. Aufrufer außerhalb davon sind für den Scanner
-    unsichtbar — „unverdrahtet" ist dort eine schwächere Aussage, und das muss
-    in der Doku stehen, bevor jemand auf Verdacht löscht.
+    A subfolder with `project.godot`, `package.json`, or `.git` is its own
+    repository. Callers outside it are invisible to the scanner — "unwired" is a
+    weaker claim there, and that needs to be noted in the docs before someone
+    deletes code on suspicion.
     """
     for marker in SUBPROJECT_MARKERS:
         if (domain_dir / marker).exists():
             return marker
-    # Eine Ebene tiefer: `games/dungeon_quest/project.godot`
+    # One level deeper: `games/dungeon_quest/project.godot`
     try:
         for child in domain_dir.iterdir():
             if not child.is_dir():
@@ -229,7 +229,7 @@ def _detect_subproject(domain_dir: Path) -> str:
 
 
 def scan_repository(root: Path) -> dict:
-    """Dateien nach Domäne, Tokens, Hotspots und unverdrahtete Symbole."""
+    """Group files by domain, tokens, hotspots, and unwired symbols."""
     root = Path(root)
     sources: list[tuple[str, str, int]] = []  # (rel, text, tokens)
     domains: dict[str, dict] = {}
@@ -252,8 +252,8 @@ def scan_repository(root: Path) -> dict:
         bucket["files"].append({"path": rel, "lines": len(text.splitlines()),
                                 "tokens": tokens})
         bucket["tokens"] += tokens
-        # Die Symbole der größten Datei zuerst, damit die Domänenliste die
-        # Logik zeigt und nicht zwölf Getter aus einer Zufallsdatei.
+        # Symbols of the largest file first, so the domain list shows real logic
+        # rather than twelve getters from a random file.
         for name in _core_symbols(text, limit=6):
             if name not in bucket["symbols"] and len(bucket["symbols"]) < 12:
                 bucket["symbols"].append(name)
@@ -261,8 +261,8 @@ def scan_repository(root: Path) -> dict:
     for bucket in domains.values():
         bucket["files"].sort(key=lambda item: -item["tokens"])
         bucket["subproject"] = _detect_subproject(bucket["root"])
-        # Kern-Symbole aus den größten Dateien der Domäne, nicht aus den
-        # erstbesten: In einer 60-Zeilen-Hilfsdatei steht kein Kern.
+        # Core symbols from the largest files in the domain, not the first ones:
+        # a 60-line helper file does not contain core logic.
         texts = {rel: text for rel, text, _t in sources}
         symbols: list[str] = []
         for item in bucket["files"][:5]:
@@ -290,19 +290,19 @@ def scan_repository(root: Path) -> dict:
 
 
 def _find_unwired(sources: list[tuple[str, str, int]]) -> list[dict]:
-    """Funktionen > 15 Zeilen, deren Name nirgends sonst im Code auftaucht.
+    """Find functions > 15 lines whose name appears nowhere else in the codebase.
 
-    Ein Durchlauf über den Gesamttext pro Symbol: `str.count` läuft in C, damit
-    bleibt der Scan auch bei hundert Dateien unter einer Sekunde.
+    One pass over the combined text per symbol: `str.count` runs in C, keeping
+    the scan under one second even across a hundred files.
 
-    Zwei Anbindungsarten, die kein Aufruf sind und trotzdem zählen:
+    Two kinds of wiring that are not direct calls but still count:
 
-    - **Test-Konvention**: `test_foo` wird von pytest über den Namen gefunden,
-      nie aufgerufen. 15 von 20 Treffern in einem echten Python-Projekt waren
-      solche Funktionen — eine Warnliste, die zu 75 % falsch ist, liest niemand.
-    - **Dekorator-Registrierung**: `@mcp.tool()`, `@app.route(...)`,
-      `@pytest.fixture` hängen die Funktion an ein Framework. Sie steht dann
-      nirgends als Aufruf im Code.
+    - **Test convention**: `test_foo` is discovered by pytest by name, never
+      called directly. 15 of 20 hits in a real Python project were test functions —
+      nobody reads a warning list that is 75% false positives.
+    - **Decorator registration**: `@mcp.tool()`, `@app.route(...)`,
+      `@pytest.fixture` bind the function to a framework, so it never appears
+      as a call in the code.
     """
     haystack = "\n".join(text for _rel, text, _t in sources)
     findings: list[dict] = []
@@ -314,22 +314,22 @@ def _find_unwired(sources: list[tuple[str, str, int]]) -> list[dict]:
         for name, start, def_line in _iter_defs(text):
             if name in seen or len(name) < 4:
                 continue
-            # Test-Konventionen (pytest, unittest, JS-Test-Runner)
+            # Test conventions (pytest, unittest, JS test runners)
             if name.startswith("test_") or name.startswith("Test") or name.endswith("_test"):
                 continue
-            # Ein `export default` in App.tsx/page.tsx/route.ts mountet der
-            # Bundler oder Router von außen — kein fehlender Aufrufer.
+            # An `export default` in App.tsx/page.tsx/route.ts is mounted
+            # externally by the bundler or router — not a missing caller.
             if is_entry and "export default" in def_line:
                 continue
-            # Dekorator über der Definition (auch mehrzeilig) = an ein Framework
-            # gebunden, kein fehlender Aufrufer.
+            # Decorator above the definition (even multi-line) = bound to a
+            # framework, not a missing caller.
             if _has_decorator(lines, start):
                 continue
             length = _func_body_end(lines, start) - start + 1
             if length < UNWIRED_MIN_LINES:
                 continue
             seen.add(name)
-            # Der Name selbst zählt einmal (die Definition). Mehr heißt: benutzt.
+            # The name itself appears once (the definition). More means used.
             if haystack.count(name) <= 1:
                 findings.append({
                     "symbol": name,
@@ -510,11 +510,11 @@ def managed_path(root) -> Path:
 
 
 def load_managed(root) -> set[str] | None:
-    """Dateien, die `atlas init` erzeugt hat. None = keine Liste vorhanden.
+    """Return files created by `atlas init`. None = no managed list exists.
 
-    `None` und `set()` bedeuten Verschiedenes: None heißt „dieses Projekt kennt
-    kein managed-Konzept, prüfe alles" (Altprojekte, Google-Docs-Setups).
-    Ein leeres Set hieße „nichts ist verwaltet" und würde lint entwurzeln.
+    `None` and `set()` mean different things: None means "this project has no
+    managed concept, check everything" (legacy projects, Google Docs setups).
+    An empty set would mean "nothing is managed" and would neuter `lint`.
     """
     import json
 
@@ -568,10 +568,10 @@ def _ensure_gitignore(root: Path) -> bool:
 
 def init_project(root, out: str | Path = "docs/ARCHITECTURE.md",
                  force: bool = False, dry_run: bool = False) -> dict:
-    """Scan, Doku-Gerüst, Regeldateien, Index. Liefert einen Bericht.
+    """Scan, generate doc skeleton, rule files, and index. Returns a report.
 
-    `dry_run` zeigt, was entstehen würde, und schreibt nichts — der einzige
-    Weg, das Tool gefahrlos an einem fremden Repository auszuprobieren.
+    `dry_run` shows what would be created and writes nothing — the only safe
+    way to preview the tool on an unfamiliar repository.
     """
     root = Path(root).resolve()
     out_path = Path(out)
@@ -636,9 +636,9 @@ def init_project(root, out: str | Path = "docs/ARCHITECTURE.md",
         "kept": kept,
     }
     if not dry_run:
-        # `lint` muss später wissen, welche Dokumente atlas erzeugt hat: nur die
-        # entscheiden über den Exit-Code. Fremde Alt-Doku wird gezeigt, nicht
-        # gewertet. Vorhandene Einträge bleiben erhalten.
+        # `lint` needs to know later which documents atlas generated: only those
+        # determine the exit code. Legacy docs are shown, not scored.
+        # Existing entries are preserved.
         existing = load_managed(root) or set()
         relative = out_path.relative_to(root).as_posix()
         save_managed(root, sorted(existing | {relative}))

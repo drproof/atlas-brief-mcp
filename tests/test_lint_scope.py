@@ -1,4 +1,4 @@
-"""Lint-Scope: nur was atlas verwaltet, entscheidet über den Exit-Code."""
+"""Lint scope: only files managed by atlas determine the exit code."""
 
 from __future__ import annotations
 
@@ -30,7 +30,7 @@ def _repo(tmp_path):
 
 
 def test_without_managed_list_everything_counts(tmp_path):
-    """Abwärtskompatibel: kein managed.json = alles verwaltet = Exit 1."""
+    """Backwards-compatible: no managed.json = everything is managed = exit 1."""
     root = _repo(tmp_path)
     conn = indexer.open_index(root)
     indexer.refresh(conn, root, force=True)
@@ -44,7 +44,7 @@ def test_without_managed_list_everything_counts(tmp_path):
 
 
 def test_managed_list_downgrades_foreign_docs(tmp_path):
-    """Mit managed.json zählt die Alt-Doku als Hinweis, nicht als Fehler."""
+    """With managed.json, legacy docs count as a hint rather than an error."""
     root = _repo(tmp_path)
     bootstrap.init_project(root)
     conn = indexer.open_index(root)
@@ -72,7 +72,7 @@ def test_managed_json_uses_posix_relative_paths(tmp_path):
 
 
 def test_managed_list_accumulates_across_runs(tmp_path):
-    """Ein zweiter Lauf mit anderem --out verliert den ersten Pfad nicht."""
+    """A second run with a different --out preserves the first path."""
     root = _repo(tmp_path)
     bootstrap.init_project(root, out="docs/A.md")
     bootstrap.init_project(root, out="docs/B.md")
@@ -81,6 +81,6 @@ def test_managed_list_accumulates_across_runs(tmp_path):
 
 
 def test_missing_managed_file_is_none_not_empty(tmp_path):
-    """None (kein Konzept) und set() (nichts verwaltet) sind nicht dasselbe."""
+    """None (no managed concept) and set() (nothing managed) are not the same."""
     root = _repo(tmp_path)
     assert bootstrap.load_managed(root) is None

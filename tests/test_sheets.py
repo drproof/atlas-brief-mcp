@@ -1,7 +1,7 @@
-"""Tests für sheets.py — Primärschlüssel + Spaltenname statt Koordinaten.
+"""Tests for sheets.py — primary key + column name instead of cell coordinates.
 
-Der Fake-Service bildet die Sheets-API so weit nach, dass die Logik echt läuft:
-Lesen, Schreiben, Rücklesen, Anhängen. Kein Netz, keine Attrappen auf Logikebene.
+The fake service emulates the Sheets API closely enough for the real logic to
+run: reading, writing, readback, and appending. No network, no logic-level mocks.
 """
 
 from __future__ import annotations
@@ -14,7 +14,7 @@ from atlas import gdocs, sheets
 
 
 # --------------------------------------------------------------------------
-# Fake-Sheets-API
+# Fake Sheets API
 # --------------------------------------------------------------------------
 
 class _Request:
@@ -39,7 +39,7 @@ class FakeValues:
         self.writes: list[tuple[str, str, object]] = []
         self.appends: list[tuple[str, list]] = []
 
-    # -- lesen -------------------------------------------------------------
+    # -- read --------------------------------------------------------------
     def get(self, spreadsheetId=None, range=None, **kwargs):
         tab, cells = _split(range or "")
         rows = self.tabs.get(tab, [])
@@ -59,7 +59,7 @@ class FakeValues:
     def batchGet(self, spreadsheetId=None, ranges=None, valueRenderOption=None, **kwargs):
         return _Request({"valueRanges": [self.get(range=r).execute() for r in ranges or []]})
 
-    # -- schreiben ---------------------------------------------------------
+    # -- write -------------------------------------------------------------
     def batchUpdate(self, spreadsheetId=None, body=None):
         for entry in (body or {}).get("data", []):
             tab, cells = _split(entry["range"])
@@ -125,7 +125,7 @@ def service():
 
 @pytest.fixture()
 def wired(monkeypatch, service):
-    """Verdrahtet sheets.update/append ohne Netz: bekannte Quelle, Fake-Service."""
+    """Wires sheets.update/append offline: known source, fake service."""
     monkeypatch.setattr(gdocs, "known_sources", lambda conn: [
         {"id": "sheet-1", "name": "MYPROJECT Balancing", "mimeType": gdocs.SHEET_MIME}
     ])
@@ -136,7 +136,7 @@ def wired(monkeypatch, service):
 
 
 # --------------------------------------------------------------------------
-# A1-Notation
+# A1 notation
 # --------------------------------------------------------------------------
 
 @pytest.mark.parametrize("index,letters", [
@@ -158,7 +158,7 @@ def test_quote_tab_escapes_apostrophe():
 
 
 # --------------------------------------------------------------------------
-# Werte
+# Values
 # --------------------------------------------------------------------------
 
 @pytest.mark.parametrize("raw,expected", [
@@ -179,7 +179,7 @@ def test_same_value(left, right, equal):
 
 
 # --------------------------------------------------------------------------
-# Spalten und Zeilen finden
+# Resolving columns and rows
 # --------------------------------------------------------------------------
 
 def test_resolve_column_exact_and_casefold():
@@ -206,7 +206,7 @@ def test_resolve_column_rejects_duplicate_header():
 def test_find_row_returns_one_based_number():
     rows = TABS["Units"]
     number, headers, row, key_index = sheets.find_row(rows, "monster_goblin")
-    assert number == 2          # Header ist Zeile 1
+    assert number == 2          # Header is row 1
     assert headers[0] == "ID"
     assert row[1] == "Goblin"
     assert key_index == 0
@@ -254,7 +254,7 @@ def test_update_writes_only_named_cells(wired, tmp_path):
     assert result["verified"] is True
     assert result["resynced"] is True
     assert result["row_number"] == 2
-    # genau zwei Zellen geschrieben, Nachbarzeile unberührt
+    # Exactly two cells written, neighboring row untouched
     assert wired.values_api.writes == [("Units", "C2", 45), ("Units", "E2", "✅")]
     assert wired.values_api.tabs["Units"][2] == ["monster_orc", "Orc", "140", "4", "⬜"]
 
@@ -314,14 +314,14 @@ def test_resolve_spreadsheet_unknown_name_lists_known(wired):
 
 
 # --------------------------------------------------------------------------
-# Race: Zeile verschiebt sich zwischen Lesen und Schreiben
+# Race condition: row shifts between read and write
 # --------------------------------------------------------------------------
 
 class RaceValues(FakeValues):
-    """Simuliert einen Menschen, der im Browser sortiert, während wir schreiben."""
+    """Simulates a user sorting in the browser while we are writing."""
 
     def batchUpdate(self, spreadsheetId=None, body=None):
-        # Goblin und Orc tauschen die Plätze — unsere Zielzeile 2 ist jetzt Orc.
+        # Goblin and Orc swap places — target row 2 now holds Orc.
         self.tabs["Units"][1], self.tabs["Units"][2] = (
             self.tabs["Units"][2], self.tabs["Units"][1]
         )
@@ -341,7 +341,7 @@ def test_update_detects_row_moved_between_read_and_write(monkeypatch, tmp_path):
 
     result = sheets.update(tmp_path, None, "Units", "monster_goblin", {"HP": 45})
 
-    # Der Schreibvorgang hat Zeile 2 getroffen — dort steht jetzt aber der Orc.
+    # The write hit row 2 — which now contains Orc instead.
     assert result["written"] is True
     assert result["verified"] is False, "verschobene Zeile muss als nicht verifiziert gelten"
     assert result["row_moved"] is True

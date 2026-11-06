@@ -1,7 +1,7 @@
-"""Fortschritts-Übersicht: liest Work-Order-Status aus dem GDD-Text.
+"""Progress overview: extract work order status from documentation text.
 
-Kein neues Format nötig — die Agenten schreiben ohnehin "Work Order N — ✅ ERLEDIGT".
-Dieses Modul macht daraus eine kompakte Statuszeile für den Planungschat.
+No new format required — agents already write "Work Order N — ✅ DONE".
+This module turns those lines into a compact status summary for planning chats.
 """
 
 from __future__ import annotations
@@ -30,11 +30,11 @@ def _title(line: str, pos: int) -> str:
 
 
 def extract_work_orders(conn: sqlite3.Connection) -> list[dict]:
-    """Findet 'Work Order N' samt Status und den dabei genannten Symbolen.
+    """Find 'Work Order N' entries along with their status and mentioned symbols.
 
-    Nur Zeilen mit Status-Marker direkt nach der Nummer zählen — Erwähnungen wie
-    „API aus Work Order 1" sind keine Statusangabe. Alle Teile werden durchsucht,
-    weil lange Abschnitte in part 1..n zerlegt sind.
+    Only lines with a status marker immediately after the number count — prose
+    mentions like "API from Work Order 1" are not status declarations. Searches
+    across all parts because long sections are split into parts 1..n.
     """
     rows = conn.execute(
         "SELECT anchor, heading, body FROM sections ORDER BY rowid"
@@ -51,7 +51,7 @@ def extract_work_orders(conn: sqlite3.Connection) -> list[dict]:
             if number in items:
                 continue
 
-            # Status-Marker muss der Nummer unmittelbar folgen.
+            # Status marker must immediately follow the work order number.
             window = line[match.end(): match.end() + 40]
             done = bool(DONE_RE.search(window))
             open_ = bool(OPEN_RE.search(window))
@@ -60,7 +60,7 @@ def extract_work_orders(conn: sqlite3.Connection) -> list[dict]:
 
             status = "done" if done and not open_ else ("open" if open_ else "unknown")
 
-            # Symbole stehen oft in den Folgezeilen des Eintrags.
+            # Symbols often appear in the lines immediately following the entry.
             context = "\n".join(lines[index: index + 8])
             symbols: list[str] = []
             for symbol in SYMBOL_RE.findall(context):
@@ -79,12 +79,12 @@ def extract_work_orders(conn: sqlite3.Connection) -> list[dict]:
 
 
 def freshness(conn: sqlite3.Connection, now: datetime | None = None) -> str:
-    """Wie aktuell ist diese Antwort? Eine Zeile, die Nachprüfen überflüssig macht.
+    """Return a one-line freshness note that makes redundant re-checking unnecessary.
 
-    Der teuerste Fehler im Agentenbetrieb ist nicht die falsche Antwort, sondern
-    die richtige Antwort, der niemand traut: Ein Agent, der `atlas_status` nicht
-    glaubt, ruft die CLI, den Quellcode und ein eigenes Skript auf — 18 Schritte
-    für 267 Tokens. Ein Zeitstempel kostet zehn Tokens.
+    The most expensive failure mode in agent workflows is not a wrong answer,
+    but a right answer that the agent does not trust: an agent that doubts
+    `atlas_status` runs the CLI, inspects source files, and writes a custom
+    script — 18 steps for 267 tokens. A timestamp line costs ten tokens.
     """
     latest = conn.execute("SELECT MAX(synced_at) FROM sync_state").fetchone()
     last = (latest[0] if latest else "") or ""
@@ -113,7 +113,7 @@ def freshness(conn: sqlite3.Connection, now: datetime | None = None) -> str:
 
 
 def status_text(payload: dict) -> str:
-    """Dieselbe Auskunft als lesbarer Text — das, was ein Agent sonst selbst baut."""
+    """Render the status payload as readable text — what an agent would otherwise format itself."""
     counts = payload["counts"]
     marks = {"done": "✅", "open": "⬜", "unknown": "·"}
     lines = [

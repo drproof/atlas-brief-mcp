@@ -1,8 +1,8 @@
-"""Google-Docs/Sheets-Sync: OAuth, Export nach Markdown, Cache.
+"""Google Docs/Sheets sync: OAuth, Markdown export, and local cache.
 
-Google Docs liefert über die Drive-API direkt Markdown (`files.export`),
-deshalb braucht es keinen eigenen Docs-API-Parser. Sheets werden über die
-Sheets-API als Markdown-Tabellen gerendert.
+Google Docs exports Markdown directly via the Drive API (`files.export`), so
+no custom Docs API parser is needed. Spreadsheets are rendered as Markdown
+tables via the Sheets API.
 """
 
 from __future__ import annotations
@@ -21,19 +21,19 @@ READ_SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets.readonly",
 ]
 
-# Schreiben nur für `atlas publish` (Work-Order-Zeilen) und `atlas sheet-update`.
-# `spreadsheets` (ohne .readonly) ist der Schreib-Scope; `spreadsheets.readonly`
-# bleibt zusätzlich drin, damit `sync` weiterhin mit demselben Token läuft.
+# Write scopes are used only by `atlas publish` (work order lines) and `atlas sheet-update`.
+# `spreadsheets` (without .readonly) is the write scope; `spreadsheets.readonly`
+# is kept alongside it so `sync` continues to work with the same token.
 WRITE_SCOPES = READ_SCOPES + [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/documents",
 ]
 
-# Rückwärtskompatibel: Standard ist Lesen.
+# Backward-compatible default: read-only scopes.
 SCOPES = READ_SCOPES
 
 def global_dir() -> Path:
-    """`~/.atlas`, sonst das alte `~/.gdd` (Token/Client-Secret von vor der Umbenennung)."""
+    """Return `~/.atlas`, or legacy `~/.gdd` (token/client secret from before the rename)."""
     primary = Path.home() / ".atlas"
     if primary.is_dir():
         return primary
@@ -47,9 +47,9 @@ CLIENT_SECRET_PATH = global_dir() / "client_secret.json"
 DOC_MIME = "application/vnd.google-apps.document"
 SHEET_MIME = "application/vnd.google-apps.spreadsheet"
 
-# Das Datenformat der Statuszeilen. Englisch, weil die Dokumente oeffentlich
-# lesbar sind — aber die deutschen Varianten bleiben lesbar, damit bestehende
-# Dokumente weiter funktionieren.
+# Data format for status lines. English because the documents are publicly
+# readable — but German variants remain supported so existing documents continue
+# to work.
 STATUS_MARK = {"done": "✅ DONE", "open": "⬜ OPEN"}
 MARKS_BY_STATUS = {
     "done": ("✅ DONE", "✅ ERLEDIGT", "☑ ERLEDIGT", "☑ DONE"),
@@ -58,7 +58,7 @@ MARKS_BY_STATUS = {
 
 
 class SyncError(RuntimeError):
-    """Fehler mit klarer Handlungsanweisung für den Nutzer."""
+    """Error with a clear actionable instruction for the user."""
 
 
 # --------------------------------------------------------------------------
@@ -85,11 +85,11 @@ def find_client_secret(explicit: str | None = None) -> Path:
 
 
 def token_scopes() -> list[str]:
-    """Scopes aus der Token-Datei — nicht die angefragten.
+    """Read scopes from the token file — not the requested ones.
 
-    `Credentials.from_authorized_user_file(path, scopes)` überschreibt die
-    gespeicherten Scopes mit dem Parameter. Ein Vergleich darüber ist daher
-    immer wahr und ein fehlender Schreib-Scope fällt nicht auf.
+    `Credentials.from_authorized_user_file(path, scopes)` overwrites the stored
+    scopes with the passed parameter. Comparing against `creds.scopes` would
+    therefore always succeed and hide a missing write scope.
     """
     if not TOKEN_PATH.exists():
         return []
@@ -113,12 +113,12 @@ def load_credentials(interactive: bool = False, client_secret: str | None = None
     creds = None
     if TOKEN_PATH.exists() and not missing:
         try:
-            # Mit den GESPEICHERTEN Scopes laden, nicht mit den angeforderten:
-            # `from_authorized_user_file` überschreibt `creds.scopes` mit dem
-            # Parameter, und `to_json()` beim Refresh schreibt genau die zurück.
-            # Mit READ_SCOPES würde ein Refresh die Schreib-Scopes aus der
-            # Token-Datei löschen — ein `atlas where` hätte dann `publish` kaputt
-            # gemacht (am 05.11. genau so passiert).
+            # Load with the STORED scopes, not the requested ones:
+            # `from_authorized_user_file` overwrites `creds.scopes` with the
+            # parameter, and `to_json()` writes those back on refresh.
+            # Passing READ_SCOPES would strip write scopes from the token file
+            # on refresh — an `atlas where` call would then break `publish`
+            # (which happened on Nov 5).
             creds = Credentials.from_authorized_user_file(str(TOKEN_PATH), granted or wanted)
         except Exception:
             creds = None
@@ -209,7 +209,7 @@ def build_services(creds):
 
 
 def build_query(name_filter: str | None = None) -> str:
-    """Baut den Drive-q-Ausdruck. Klammern sind zwingend (siehe list_documents)."""
+    """Build the Drive `q` expression. Parentheses are mandatory (see list_documents)."""
     clauses = [
         f"(mimeType = '{DOC_MIME}' or mimeType = '{SHEET_MIME}')",
         "trashed = false",
@@ -221,7 +221,7 @@ def build_query(name_filter: str | None = None) -> str:
 
 
 def list_documents(drive, query: str | None = None, limit: int = 50) -> list[dict]:
-    """Sucht Google-Docs und -Sheets, deren Name den Suchbegriff enthält."""
+    """Find Google Docs and Sheets whose name contains the search term."""
     params = {
         "q": build_query(query),
         "fields": "files(id,name,mimeType,modifiedTime,webViewLink)",
@@ -236,7 +236,7 @@ def list_documents(drive, query: str | None = None, limit: int = 50) -> list[dic
 
 
 def export_document(drive, file_id: str) -> str:
-    """Google Doc -> Markdown (Google konvertiert selbst)."""
+    """Export a Google Doc as Markdown (converted by Google)."""
     try:
         data = drive.files().export(fileId=file_id, mimeType="text/markdown").execute()
     except Exception as error:
@@ -247,7 +247,7 @@ def export_document(drive, file_id: str) -> str:
 
 
 def export_sheet(sheets, file_id: str, max_rows: int = 2000, max_cols: str = "Z") -> str:
-    """Alle Blätter eines Spreadsheets als Markdown-Tabellen."""
+    """Render all tabs of a spreadsheet as Markdown tables."""
     try:
         meta = sheets.spreadsheets().get(
             spreadsheetId=file_id, includeGridData=False
@@ -311,10 +311,10 @@ def _cache_path(root: Path, name: str) -> Path:
 
 
 def assert_writable(conn, file_id: str) -> None:
-    """Schreibzugriff nur auf Quellen, die dieses Projekt kennt.
+    """Allow write access only to sources registered in this project.
 
-    Das Token hat `documents`-Scope für das gesamte Konto. Ohne diese Prüfung
-    könnte ein Agent theoretisch jedes Google Doc überschreiben.
+    The token has `documents` scope for the entire account. Without this check,
+    an agent could theoretically overwrite any Google Doc.
     """
     allowed = {source["id"] for source in known_sources(conn)}
     if file_id not in allowed:
@@ -325,7 +325,7 @@ def assert_writable(conn, file_id: str) -> None:
 
 
 def known_sources(conn) -> list[dict]:
-    """Die bereits gesyncten Dokumente — Basis für den automatischen Sync."""
+    """Return previously synced documents — basis for automatic sync."""
     return [
         {"id": row["drive_id"], "name": row["name"], "mimeType": row["mime"]}
         for row in conn.execute("SELECT drive_id, name, mime FROM sync_state")
@@ -333,10 +333,10 @@ def known_sources(conn) -> list[dict]:
 
 
 def auto_sync(root: Path, conn, max_age_seconds: int = 300, quiet: bool = True):
-    """Holt den Google-Stand, aber höchstens alle `max_age_seconds`.
+    """Fetch the latest Google state, at most once every `max_age_seconds`.
 
-    Wird vor MCP-Tool-Calls und vor status/brief aufgerufen. Ohne Token oder ohne
-    bekannte Quellen passiert nichts — der Aufruf ist dann kostenlos.
+    Called before MCP tool calls and before status/brief. Without a token or
+    known sources this is a no-op with zero overhead.
     """
     import time
 
@@ -358,7 +358,7 @@ def auto_sync(root: Path, conn, max_age_seconds: int = 300, quiet: bool = True):
         except (TypeError, ValueError):
             pass
 
-    # Versuch sofort markieren, damit parallele Aufrufe nicht mehrfach syncen.
+    # Record the attempt immediately so concurrent calls do not sync repeatedly.
     conn.execute(
         "INSERT INTO meta(key, value) VALUES('last_sync_attempt', ?) "
         "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -368,7 +368,7 @@ def auto_sync(root: Path, conn, max_age_seconds: int = 300, quiet: bool = True):
 
     try:
         return sync(root, sources=sources, conn=conn)
-    except Exception as error:  # Netz, Scope, abgelaufenes Token — nie den Tool-Call killen
+    except Exception as error:  # network, scope, expired token — never kill the tool call
         conn.execute(
             "INSERT INTO meta(key, value) VALUES('last_sync_error', ?) "
             "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
@@ -388,12 +388,12 @@ def sync(
     client_secret: str | None = None,
     conn=None,
 ) -> dict:
-    """Holt Google-Docs/Sheets, schreibt Markdown-Cache und indiziert neu."""
+    """Fetch Google Docs/Sheets, write the Markdown cache, and re-index."""
     creds = load_credentials(interactive=False, client_secret=client_secret)
     drive, sheets, _ = build_services(creds)
 
-    # Ohne explizite Quellen: die bereits bekannten Dokumente nachziehen.
-    # Erst wenn auch die fehlen, ist ein Namensfilter zwingend.
+    # Without explicit sources: refresh the already known documents.
+    # A name filter is only required when none are registered yet.
     if not sources and not query and conn is not None:
         sources = known_sources(conn)
 

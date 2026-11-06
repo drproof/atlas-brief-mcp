@@ -1,4 +1,4 @@
-"""Anbindungs-Nachweis: definiert *und* benutzt — sonst keine Abnahme."""
+"""Wiring verification: defined *and* used — otherwise acceptance is refused."""
 
 from __future__ import annotations
 
@@ -57,7 +57,7 @@ def test_missing_symbol_fails_with_other_reason(tmp_path):
 
 
 def test_signal_binding_satisfies_check(tmp_path):
-    """Ein Signal-Handler ohne Klammer-Aufruf ist angebunden, nicht tot."""
+    """A signal handler connected without parentheses is wired, not dead code."""
     root = _project(
         tmp_path,
         "func _on_skill() -> void:\n\tpass\n",
@@ -71,7 +71,7 @@ def test_signal_binding_satisfies_check(tmp_path):
 
 
 def test_substring_is_not_accepted_as_definition(tmp_path):
-    """`vault` darf nicht durch `can_vault_charger_ram` bestätigt werden."""
+    """`vault` must not be satisfied by `can_vault_charger_ram`."""
     root = _project(tmp_path, "func can_vault_charger_ram() -> bool:\n\treturn true\n")
     result = verify.check(root, ["vault"])
 
@@ -95,7 +95,7 @@ def test_refusal_names_the_symbol_and_the_line(tmp_path):
 # --------------------------------------------------------------------------
 
 def test_publish_refuses_before_touching_the_network(tmp_path):
-    """Das Gate läuft vor `load_credentials` — kein Token, kein Netz, kein Write."""
+    """The gate runs before `load_credentials` — no token, no network, no write."""
     root = _project(tmp_path, "func dispatch_skill(id: String) -> void:\n\tpass\n")
 
     result = publish.publish(root, None, 8, status="done",
@@ -104,12 +104,12 @@ def test_publish_refuses_before_touching_the_network(tmp_path):
     assert result["written"] is False
     assert result["refused"] is True
     assert "Acceptance refused" in result["refusal"]
-    # Kein Google-Zugriff versucht: kein document_id im Payload.
+    # No Google API call attempted: no document_id in payload.
     assert "document_id" not in result
 
 
 def test_open_status_skips_the_gate(tmp_path):
-    """Eine offene Work Order darf unfertig sein — sie wird nicht geprüft."""
+    """An open Work Order is allowed to be unfinished — it is not checked."""
     root = _project(tmp_path, "func dispatch_skill(id: String) -> void:\n\tpass\n")
     gate, refusal = publish._attachment_gate(root, 8, "open", ["dispatch_skill"], False)
 
@@ -118,7 +118,7 @@ def test_open_status_skips_the_gate(tmp_path):
 
 
 def test_gate_uses_wo_symbols_file(tmp_path):
-    """Hinterlegte Symbole werden auch ohne explizite Angabe geprüft."""
+    """Configured symbols are checked even without explicit arguments."""
     root = _project(tmp_path, "func dispatch_skill(id: String) -> void:\n\tpass\n")
     _wo_symbols(root, "8:\n  - dispatch_skill\n")
 
@@ -129,7 +129,7 @@ def test_gate_uses_wo_symbols_file(tmp_path):
 
 
 def test_gate_warns_when_no_symbols_are_known(tmp_path):
-    """Ohne hinterlegte Symbole wird nicht blockiert — aber auch nicht geschwiegen."""
+    """Without configured symbols, the gate does not block — but does emit a warning."""
     root = _project(tmp_path, "func other() -> void:\n\tpass\n")
     gate, refusal = publish._attachment_gate(root, 99, "done", None, False)
 
@@ -148,7 +148,7 @@ def test_dry_run_reports_but_does_not_refuse(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# Regressions-Wächter über erledigte Work Orders
+# Regression guard across completed Work Orders
 # --------------------------------------------------------------------------
 
 def test_regression_found_for_done_work_order(tmp_path):
@@ -172,11 +172,11 @@ def test_open_work_order_is_not_checked(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# publish ist idempotent: keine zweite Zeile für dieselbe Work Order
+# publish is idempotent: no duplicate line for the same Work Order
 # --------------------------------------------------------------------------
 
 def test_publish_skips_duplicate_with_same_status(tmp_path, monkeypatch):
-    """Der Bug vom 05.11.: vier WOs standen doppelt, `status` nahm den ersten."""
+    """The 2026-11-05 bug: four WOs were listed twice and `status` took the first."""
     import json
 
     from atlas import status as status_mod
@@ -216,7 +216,7 @@ def test_publish_switches_status_instead_of_appending(tmp_path, monkeypatch):
 
 
 def test_short_symbol_survives_substring_noise(tmp_path):
-    """`vault` ist definiert, auch wenn drei `can_vault_*` davor liegen."""
+    """`vault` is defined even when three `can_vault_*` functions precede it."""
     root = _project(tmp_path, (
         "func can_vault_a() -> void:\n\tpass\n\n"
         "func can_vault_b() -> void:\n\tpass\n\n"
@@ -232,7 +232,7 @@ def test_short_symbol_survives_substring_noise(tmp_path):
 
 
 def test_dead_class_does_not_pass_the_gate(tmp_path):
-    """`class_name Foo` deklariert die Klasse, es benutzt sie nicht."""
+    """`class_name Foo` declares the class; it does not count as a usage."""
     root = _project(tmp_path, "class_name LonelyClass\n\nextends Node\n")
 
     result = verify.check(root, ["LonelyClass"])

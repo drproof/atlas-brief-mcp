@@ -1,4 +1,4 @@
-"""`atlas init`: Ersterfassung eines Repos ohne Doku."""
+"""`atlas init`: Initial bootstrap of a repository without documentation."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from atlas import status as status_mod
 
 
 def _dummy_repo(tmp_path):
-    """Zwei Domänen, drei Code-Dateien: eine benutzte, eine tote Funktion, ein Hotspot."""
+    """Two domains, three code files: one used function, one dead function, one hotspot."""
     root = tmp_path / "proj"
     (root / "core").mkdir(parents=True)
     (root / "ui").mkdir()
@@ -22,7 +22,7 @@ def _dummy_repo(tmp_path):
         "\treturn used_helper(21)\n",
         encoding="utf-8",
     )
-    # Tote Funktion: 18 Zeilen, wird nirgends erwähnt.
+    # Dead function: 18 lines, never referenced anywhere.
     (root / "core" / "orphans.gd").write_text(
         "extends Node\n\n"
         "func orphan_function(input: int) -> int:\n"
@@ -30,7 +30,7 @@ def _dummy_repo(tmp_path):
         + "\treturn step_14\n",
         encoding="utf-8",
     )
-    # Hotspot: > 10.000 Tokens
+    # Hotspot: > 10,000 tokens
     (root / "ui" / "huge.gd").write_text(
         "extends Control\n\n" + ("# filler line for size\n" * 2500), encoding="utf-8"
     )
@@ -57,8 +57,8 @@ def test_init_creates_lint_clean_document_and_work_order(tmp_path):
     assert "docs/ARCHITECTURE.md" in report["created"]
     document = (root / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8")
     assert "Work Order 1 — ⬜ OPEN" in document
-    assert "orphan_function" in document          # Risiko-Abschnitt
-    assert "core/engine.gd" in document           # Dateipfad für atlas_links
+    assert "orphan_function" in document          # Risk section
+    assert "core/engine.gd" in document           # File path for atlas_links
 
     conn = indexer.open_index(root)
     indexer.refresh(conn, root, force=True)
@@ -99,8 +99,7 @@ def test_second_init_keeps_existing_files(tmp_path):
     second = bootstrap.init_project(root)
 
     assert "docs/ARCHITECTURE.md" in second["kept"]
-    # Ein zweiter Lauf darf nur die Verwaltungsliste anfassen, keine Doku
-    # und keine Regeldatei.
+    # A second run may only touch the managed list, not docs or rule files.
     assert all("managed.json" in c or "gitignore" in c for c in second["created"])
     assert doc.read_text(encoding="utf-8") == before
 
@@ -128,7 +127,7 @@ def test_init_adds_atlas_dir_to_gitignore(tmp_path):
 
 
 def test_find_root_stops_at_home(tmp_path, monkeypatch):
-    """Das Home ist kein Projekt — dort liegt der globale Konfig-Ordner."""
+    """Home is not a project — it holds the global config directory."""
     from atlas import config
 
     home = tmp_path / "home"
@@ -143,7 +142,7 @@ def test_find_root_stops_at_home(tmp_path, monkeypatch):
 
 
 def test_find_root_ignores_global_config_dir(tmp_path, monkeypatch):
-    """`~/.atlas` ist Token-Ablage, kein Projekt-Marker."""
+    """`~/.atlas` is token storage, not a project marker."""
     from atlas import config
 
     home = tmp_path / "home"
@@ -171,7 +170,7 @@ def test_dry_run_writes_nothing(tmp_path):
 
 
 def test_unwired_ignores_test_functions(tmp_path):
-    """pytest ruft `test_*` per Namenskonvention — kein fehlender Aufrufer."""
+    """pytest calls `test_*` by naming convention — not a missing caller."""
     root = tmp_path / "proj"
     root.mkdir()
     (root / "tests").mkdir()
@@ -189,7 +188,7 @@ def test_unwired_ignores_test_functions(tmp_path):
 
 
 def test_unwired_ignores_decorated_functions(tmp_path):
-    """`@mcp.tool()` bindet eine Funktion an ein Framework, ohne Aufruf."""
+    """`@mcp.tool()` binds a function to a framework without an explicit call."""
     root = tmp_path / "proj"
     root.mkdir()
     body = "".join(f"    line_{i} = {i}\n" for i in range(16))
@@ -207,7 +206,7 @@ def test_unwired_ignores_decorated_functions(tmp_path):
 
 
 def test_core_symbols_are_the_big_ones_not_the_first(tmp_path):
-    """`_ready` und Getter sind keine Kern-Symbole, auch wenn sie oben stehen."""
+    """`_ready` and getters are not core symbols even if they appear at the top."""
     root = tmp_path / "proj"
     root.mkdir()
     (root / "game.gd").write_text(
@@ -230,7 +229,7 @@ def test_core_symbols_are_the_big_ones_not_the_first(tmp_path):
 
 
 def test_class_methods_have_correct_length(tmp_path):
-    """Eine Methode endet an der nächsten Methode, nicht am Klassenende."""
+    """A method ends at the next method, not at the end of the class."""
     root = tmp_path / "proj"
     root.mkdir()
     (root / "service.py").write_text(
@@ -250,15 +249,15 @@ def test_class_methods_have_correct_length(tmp_path):
     scan = bootstrap.scan_repository(root)
     texts = {f["path"]: f for f in scan["domains"]["(root)"]["files"]}
 
-    # Nur die lange Methode ist ein Kern-Symbol, nicht die zwei kurzen.
+    # Only the long method is a core symbol, not the two short ones.
     assert scan["domains"]["(root)"]["symbols"] == ["long_one"]
-    # Und nur sie ist lang genug für die Unwired-Prüfung.
+    # And only it is long enough for the unwired check.
     assert [u["symbol"] for u in scan["unwired"]] == ["long_one"]
     assert scan["unwired"][0]["lines"] == 22
 
 
 def test_multiline_decorator_counts_as_framework_binding(tmp_path):
-    """`@app.post(...)` über drei Zeilen: die Zeile über `def` ist `)`."""
+    """`@app.post(...)` spanning three lines: the line above `def` is `)`."""
     root = tmp_path / "proj"
     root.mkdir()
     body = "".join(f"    line_{i} = {i}\n" for i in range(16))
@@ -276,7 +275,7 @@ def test_multiline_decorator_counts_as_framework_binding(tmp_path):
 
 
 def test_subproject_is_marked_in_document(tmp_path):
-    """Ein Ordner mit eigenem project.godot ist eine Teilkopie, kein Teil des Ganzen."""
+    """A folder with its own project.godot is a sub-project, not part of the whole."""
     root = tmp_path / "proj"
     (root / "games" / "dungeon").mkdir(parents=True)
     (root / "games" / "dungeon" / "project.godot").write_text("config_version=5\n", encoding="utf-8")
@@ -341,14 +340,14 @@ def _ts_project(tmp_path, files: dict[str, str]):
 
 
 def test_typescript_multiline_signature_is_detected(tmp_path):
-    """`export function x(\n …\n): T {` — die Klammer steht auf einer anderen Zeile."""
+    """`export function x(\n …\n): T {` — the closing paren is on a different line."""
     root = _ts_project(tmp_path, {"src/services.ts": TS_APP})
     names = {name for name, _start, _line in bootstrap._iter_defs(TS_APP)}
     assert "calculateRevenue" in names
 
 
 def test_react_wrappers_are_detected(tmp_path):
-    """`React.memo((…) =>` und `forwardRef<…>((…) =>` sind Arrow-Functions."""
+    """`React.memo((…) =>` and `forwardRef<…>((…) =>` are arrow functions."""
     root = _ts_project(tmp_path, {"src/components.tsx": TS_APP})
     names = {name for name, _start, _line in bootstrap._iter_defs(TS_APP)}
     assert "Modal" in names
@@ -356,17 +355,17 @@ def test_react_wrappers_are_detected(tmp_path):
 
 
 def test_unused_ts_helper_is_reported(tmp_path):
-    """Der Wrapper-Erkennung sei Dank: nur der wirklich ungenutzte Helfer bleibt."""
+    """Thanks to wrapper detection, only the truly unused helper remains."""
     root = _ts_project(tmp_path, {"src/services.ts": TS_APP})
     unwired = {item["symbol"] for item in bootstrap.scan_repository(root)["unwired"]}
 
     assert "internalHelper" in unwired
-    assert "calculateRevenue" not in unwired   # export function = angebunden? nein: nur Definition
+    assert "calculateRevenue" not in unwired   # export function = wired? no: definition only
     assert "Modal" not in unwired
 
 
 def test_control_structures_are_not_functions(tmp_path):
-    """`if (x) {` sieht wie eine Methode aus, ist keine."""
+    """`if (x) {` looks like a method signature, but is not."""
     root = _ts_project(tmp_path, {"src/flow.ts": (
         "export function decide(value: number) {\n"
         "  if (value > 0) {\n"
@@ -387,7 +386,7 @@ def test_control_structures_are_not_functions(tmp_path):
 
 
 def test_entry_file_export_default_is_not_unwired(tmp_path):
-    """`App.tsx` wird vom Bundler gemountet — `export default` braucht keinen Aufrufer."""
+    """`App.tsx` is mounted by the bundler — `export default` needs no caller."""
     root = _ts_project(tmp_path, {"src/App.tsx": (
         "export default function Dashboard() {\n"
         + "".join(f"  const row_{i} = {i};\n" for i in range(16))
@@ -400,7 +399,7 @@ def test_entry_file_export_default_is_not_unwired(tmp_path):
 
 
 def test_multiline_signature_has_correct_body_length(tmp_path):
-    """`): RevenueResult {` auf Spalte 0 beendet den Rumpf NICHT."""
+    """`): RevenueResult {` at column 0 does NOT end the function body."""
     source = (
         "export function calculateRevenue(\n"
         "  studio: StudioData,\n"
@@ -415,4 +414,4 @@ def test_multiline_signature_has_correct_body_length(tmp_path):
     end = bootstrap._func_body_end(lines, start)
 
     assert end == len(lines) - 1, f"Rumpf endet bei {end}, erwartet {len(lines) - 1}"
-    assert end - start + 1 == 18  # 4 Signaturzeilen + 12 Rumpf + return + }
+    assert end - start + 1 == 18  # 4 signature lines + 12 body + return + }

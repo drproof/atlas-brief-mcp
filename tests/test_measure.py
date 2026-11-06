@@ -1,4 +1,4 @@
-"""`atlas measure`: die Ersparnis am eigenen Projekt, nicht als Behauptung."""
+"""`atlas measure`: token savings measured on the project itself, not claimed."""
 
 from __future__ import annotations
 
@@ -11,7 +11,7 @@ from atlas import indexer, measure
 
 @pytest.fixture
 def small_project(tmp_path):
-    """Ein Projekt mit genug Text, damit die Baseline etwas wiegt."""
+    """A project with enough text so that the baseline carries weight."""
     docs = tmp_path / "docs"
     docs.mkdir()
     body = "Der Reaktor liefert Energie fuer die Hydraulik. " * 40
@@ -59,8 +59,8 @@ def test_measure_does_not_count_a_miss_as_a_saving(small_project):
 
 
 def test_generated_questions_are_flagged_as_such(small_project):
-    """Die automatisch erzeugten Fragen enthalten die Ueberschrift — das muss
-    im Bericht stehen, sonst liest sich die Zahl wie eine unabhaengige Messung."""
+    """Auto-generated questions contain the section heading — this must be
+    stated in the report so the number is not mistaken for an independent benchmark."""
     root, conn = small_project
 
     payload = measure.measure(root, conn, sample=2)
@@ -80,7 +80,7 @@ def test_explicit_questions_have_no_caveat(small_project):
 
 
 def test_questions_are_unique(small_project):
-    """Zwei Abschnitte mit gleicher Ueberschrift ergeben nicht zwei Fragen."""
+    """Two sections with the same heading must not produce duplicate questions."""
     root, conn = small_project
 
     questions = measure.auto_questions(conn, limit=10)
@@ -103,4 +103,4 @@ def test_json_payload_is_serialisable(small_project):
 
     payload = measure.measure(root, conn, sample=2)
 
-    json.dumps(payload)  # darf nicht werfen
+    json.dumps(payload)  # must not raise

@@ -1,4 +1,4 @@
-"""Markdown -> Sections mit stabilen Ankern."""
+"""Markdown -> sections with stable anchors."""
 
 from __future__ import annotations
 
@@ -13,13 +13,13 @@ FENCE_RE = re.compile(r"^\s*(```|~~~)")
 HEADING_RE = re.compile(r"^(#{1,6})\s+(.+?)\s*#*\s*$")
 PARA_RE = re.compile(r"\n\s*\n")
 
-# Google Docs exportiert Satzzeichen escaped ("1\.", "\-", "\_"). Das stört
-# Suche und Snippets, ist aber kein Inhalt. Nur diese Zeichen lösen wir auf.
+# Google Docs exports punctuation escaped ("1\.", "\-", "\_"). That hurts
+# search and snippets without adding content. Unescape only these characters.
 ESCAPE_RE = re.compile(r"\\([.\-_*\[\]#!|>~])")
 
 
 def clean_markdown(text: str) -> str:
-    """Entfernt Export-Escapes wie '1\\.' -> '1.' ohne echte Backslashes anzutasten."""
+    """Remove export escapes like '1\\.' -> '1.' without touching real backslashes."""
     return ESCAPE_RE.sub(r"\1", text)
 
 try:
@@ -54,7 +54,7 @@ class Doc:
 
 
 def parse_frontmatter(text: str) -> tuple[dict, str, int]:
-    """Liefert (meta, body, entfernte_zeilen). Fehlertolerant."""
+    """Return (meta, body, dropped_lines). Fault-tolerant."""
     if not text.startswith("---"):
         return {}, text, 0
     lines = text.splitlines(keepends=True)
@@ -80,7 +80,7 @@ def parse_frontmatter(text: str) -> tuple[dict, str, int]:
 
 
 def scan_headings(lines: list[str]) -> list[tuple[int, int, str]]:
-    """(zeilenindex, level, titel). Headings in Code-Fences werden ignoriert."""
+    """Return (line_index, level, title). Headings inside code fences are ignored."""
     out: list[tuple[int, int, str]] = []
     in_fence = False
     marker = ""
@@ -125,8 +125,8 @@ def _split_body(body: str, max_chars: int) -> list[str]:
         current = rest
     if current:
         parts.append(current)
-    # Mini-Fragmente am Ende an den Vorgänger hängen (z. B. 12-Zeichen-Reste
-    # eines Tabellen-Splits) — sie sind allein wertlos.
+    # Merge tiny trailing fragments into the preceding part (e.g. 12-char leftovers
+    # from a table split) — they are useless on their own.
     if len(parts) > 1 and len(parts[-1]) < 100:
         parts[-2] = f"{parts[-2]}\n\n{parts[-1]}".strip()
         parts.pop()
@@ -134,7 +134,7 @@ def _split_body(body: str, max_chars: int) -> list[str]:
 
 
 def chunk(text: str, doc_id: str, path: str, max_chars: int = MAX_CHARS) -> Doc:
-    """Zerlegt ein Markdown-Dokument in Sections."""
+    """Split a Markdown document into sections."""
     meta, body, dropped = parse_frontmatter(text)
     body = clean_markdown(body)
     lines = body.splitlines()

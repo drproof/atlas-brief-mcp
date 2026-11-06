@@ -1,4 +1,4 @@
-"""SQLite-Index: Schema, inkrementeller Aufbau, Staleness."""
+"""SQLite index: schema, incremental build, and staleness checks."""
 
 from __future__ import annotations
 
@@ -102,18 +102,18 @@ CREATE INDEX IF NOT EXISTS idx_tasks_path ON tasks(path);
 
 SCHEMA_VERSION = "2"
 
-# Alles, was aus den Quelldateien regenerierbar ist. Bei einem Schema-Wechsel
-# wird es verworfen und neu aufgebaut — Markdown bleibt die Wahrheit.
+# Everything regenerable from the source files. Dropped and rebuilt on a
+# schema version bump — Markdown remains the source of truth.
 CACHE_TABLES = ("sections_fts", "sections", "tasks", "docs", "sync_state")
 
 
 def _rebuild_cache(conn: sqlite3.Connection) -> None:
-    """Verwirft den Index bei geändertem Schema.
+    """Drop and recreate the index when the schema changes.
 
-    `CREATE TABLE IF NOT EXISTS` migriert nichts: Eine neue Spalte fehlt in
-    einer bestehenden Tabelle, und der erste Schreibzugriff scheitert mit
-    `OperationalError`. Weil der Index nur Cache ist, ist ein Neubau billiger
-    und ehrlicher als eine Migrationskette.
+    `CREATE TABLE IF NOT EXISTS` does not migrate anything: a new column is
+    missing in an existing table, and the first write fails with
+    `OperationalError`. Because the index is purely a cache, rebuilding is
+    cheaper and cleaner than a migration chain.
     """
     for name in CACHE_TABLES:
         conn.execute(f"DROP TABLE IF EXISTS {name}")
@@ -131,9 +131,9 @@ def connect(path: Path) -> sqlite3.Connection:
 
 
 def init(conn: sqlite3.Connection) -> None:
-    # Erst die Version prüfen, dann das Schema anwenden: SCHEMA enthält einen
-    # Index auf `tasks.path`, und `CREATE INDEX` scheitert an einer alten
-    # Tabelle ohne diese Spalte. `CREATE TABLE IF NOT EXISTS` migriert nichts.
+    # Check the version first, then apply the schema: SCHEMA includes an index
+    # on `tasks.path`, and `CREATE INDEX` fails on an old table lacking that
+    # column. `CREATE TABLE IF NOT EXISTS` does not migrate existing tables.
     conn.execute("CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT)")
     row = conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone()
 
@@ -143,8 +143,8 @@ def init(conn: sqlite3.Connection) -> None:
             "INSERT INTO meta(key, value) VALUES('schema_version', ?)", (SCHEMA_VERSION,)
         )
     elif str(row["value"]) != SCHEMA_VERSION:
-        # Schema geändert: Cache verwerfen und neu aufbauen. Die nächste
-        # Indizierung füllt ihn wieder — Markdown ist die Wahrheit.
+        # Schema changed: drop and rebuild cache. The next indexing pass
+        # repopulates it — Markdown is the source of truth.
         _rebuild_cache(conn)
         conn.execute("UPDATE meta SET value=? WHERE key='schema_version'", (SCHEMA_VERSION,))
     else:
@@ -173,7 +173,7 @@ def _unique_doc_id(conn: sqlite3.Connection, wanted: str, rel: str) -> str:
 
 
 def index_file(conn: sqlite3.Connection, root: Path, path: Path) -> int:
-    """Indiziert eine Datei neu (idempotent). Liefert Anzahl Sections."""
+    """Re-index a single file (idempotent). Returns the number of sections."""
     rel = path.relative_to(root).as_posix()
     raw = path.read_text(encoding="utf-8-sig", errors="replace")
     stat = path.stat()
@@ -187,8 +187,8 @@ def index_file(conn: sqlite3.Connection, root: Path, path: Path) -> int:
     doc = meta_probe
 
     conn.execute("DELETE FROM sections WHERE path=?", (rel,))
-    # Per Pfad löschen, nicht per doc_id-Anker: Ändert sich die `id:` im
-    # Frontmatter, bleibt der alte Anker zurück und würde nie aufgeräumt.
+    # Delete by path rather than by doc_id anchor: if `id:` in frontmatter
+    # changes, the old anchor would otherwise remain orphaned forever.
     conn.execute("DELETE FROM tasks WHERE path=?", (rel,))
     conn.execute("DELETE FROM docs WHERE path=?", (rel,))
     conn.execute("DELETE FROM docs WHERE id=?", (doc_id,))
@@ -240,7 +240,7 @@ def index_file(conn: sqlite3.Connection, root: Path, path: Path) -> int:
 
 
 def _extract_tasks(body: str):
-    """'- [ ] Text @owner #tag' -> (zeile, text, done, owner, tag)."""
+    """Parse '- [ ] Text @owner #tag' -> (line_offset, text, done, owner, tag)."""
     import re
 
     pattern = re.compile(r"^\s*[-*+]\s+\[( |x|X)\]\s+(.+)$")
@@ -264,7 +264,7 @@ def _extract_tasks(body: str):
 
 
 def refresh(conn: sqlite3.Connection, root: Path, force: bool = False) -> dict:
-    """Inkrementeller Abgleich Dateisystem -> Index."""
+    """Incrementally sync the filesystem into the SQLite index."""
     files = discover(root)
     known = {
         row["path"]: row
@@ -302,8 +302,8 @@ def refresh(conn: sqlite3.Connection, root: Path, force: bool = False) -> dict:
         indexed += 1
 
     for rel in known.keys() - seen:
-        # Auch die Tasks: Sonst bleiben Geister-Aufgaben gelöschter Dateien
-        # in `atlas tasks` und in der offenen Task-Zahl stehen.
+        # Also remove tasks: otherwise ghost tasks from deleted files remain
+        # in `atlas tasks` and in the open task count.
         conn.execute("DELETE FROM tasks WHERE path=?", (rel,))
         conn.execute("DELETE FROM docs WHERE path=?", (rel,))
         conn.execute("DELETE FROM sections WHERE path=?", (rel,))
@@ -343,7 +343,7 @@ def open_index(root: Path, create: bool = True) -> sqlite3.Connection:
 
 
 def ensure_fresh(conn: sqlite3.Connection, root: Path) -> None:
-    """Billiger Staleness-Check: nur neu indexieren, wenn sich etwas änderte."""
+    """Cheap staleness check: re-index only when files have changed."""
     docs = conn.execute("SELECT path, mtime, size FROM docs").fetchall()
     known = {row["path"]: (row["mtime"], row["size"]) for row in docs}
     files = discover(root)
@@ -371,12 +371,12 @@ def get_sync_state(conn: sqlite3.Connection, drive_id: str):
 
 
 def invalidate_sync_state(conn: sqlite3.Connection, drive_id: str) -> None:
-    """Vergisst den Sync-Stand eines Dokuments.
+    """Forget the sync state of a document.
 
-    Nötig, wenn der Drive-Export dem Schreibvorgang nachhinkt: `sync` hat dann
-    den alten Text in den Cache geschrieben, aber die neue `modifiedTime` in
-    `sync_state` vermerkt. Der nächste `auto_sync` hielte das Dokument für
-    unverändert und die neue Zeile bliebe dauerhaft unsichtbar.
+    Needed when the Drive export lags behind a write: `sync` wrote the stale
+    text into the cache, but recorded the new `modifiedTime` in `sync_state`.
+    Without invalidation, the next `auto_sync` would treat the document as
+    unchanged and the new line would remain invisible indefinitely.
     """
     conn.execute("DELETE FROM sync_state WHERE drive_id = ?", (drive_id,))
     conn.commit()

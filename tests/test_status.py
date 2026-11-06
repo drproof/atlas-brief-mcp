@@ -33,7 +33,7 @@ def test_mentions_without_status_are_ignored():
 
 
 def test_split_sections_are_searched():
-    """Lange Abschnitte liegen als part 1..n vor — Status kann in jedem Teil stehen."""
+    """Long sections are stored as part 1..n — status may appear in any part."""
     conn = _conn([
         ("doc#a", "A", "Vorspann ohne Status"),
         ("doc#b", "B", "* **Work Order 7 — ✅ DONE (Späte Order):**"),

@@ -1,4 +1,4 @@
-"""Symbolsuche im Code — Datei, Zeile, Signatur statt 125k-Token-Datei.
+"""Symbol search in code — file, line, and signature instead of a 125k-token file.
 
 An agent that reads a 9,000-line manager module end to end burns ~125,000 tokens.
 For the question "where is `swap_positions_with_ally` defined?" a file, a line and
@@ -6,16 +6,16 @@ a signature are enough. This module does exactly that, without an index: one pas
 over the sources, substring filter before the regex (that is the cheap part), then
 only the hits.
 
-Bewusst kein Parser: GDScript-Signaturen sind mit zwei Regexen zuverlässig genug,
-und ein Symbol-Index müsste bei jeder Code-Änderung nachziehen.
+Deliberately no parser: GDScript signatures are reliable enough with two regexes,
+and a symbol index would have to be updated on every code change.
 
-**Anbindung zählt, nicht Definition.** Seit WO 8 (1.070 Zeilen implementiert,
-Aufrufer vergessen, vom nächsten Hotfix als „unused" gelöscht) liefert jede Suche
-zusätzlich die Zahl der Aufrufe *und* der Referenzen. Referenzen sind der Teil,
-den ein reiner `name(`-Scan übersieht:
+**Wiring counts, not definition.** Since WO 8 (1,070 lines implemented, caller
+forgotten, deleted by the next hotfix as "unused"), every search also returns
+the number of calls *and* references. References are the part a pure `name(` scan
+misses:
 
-    signal.connect(_on_skill)        → Callable ohne Klammer
-    tween_method(_update_bar, ...)   → Callable ohne Klammer
+    signal.connect(_on_skill)        → Callable without parentheses
+    tween_method(_update_bar, ...)   → Callable without parentheses
     call("_dispatch_skill")          → String
     Callable(self, "_on_skill")      → String
     [connection ... method="_on_skill"]  in .tscn
@@ -26,14 +26,14 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-# Eine Quelle der Wahrheit für "was ist eine Funktionsdefinition": `atlas init`
-# und die Symbolsuche müssen dieselben Sprachen sehen. Sonst schreibt `init`
-# eine AGENTS.md, die `atlas_code_find` empfiehlt, und das Gate findet im
-# Python- oder TS-Projekt nichts.
+# Single source of truth for "what is a function definition": `atlas init`
+# and symbol search must see the same languages. Otherwise `init` writes an
+# AGENTS.md recommending `atlas_code_find`, while the gate finds nothing in
+# a Python or TS project.
 from .bootstrap import DEF_PATTERNS, SKIP_KEYWORDS, iter_source_files
 
 FUNC_RE = re.compile(
-    # Ganze Signatur bis zum abschließenden ':' — inklusive 'static' und '-> Typ'.
+    # Full signature up to the trailing ':' — including 'static' and '-> Type'.
     r"^[ \t]*(?P<signature>(?:static[ \t]+)?func[ \t]+(?P<name>[A-Za-z_]\w*)"
     r"[ \t]*\((?P<args>[^)]*)\)[^\n:]*)",
     re.MULTILINE,
@@ -45,10 +45,10 @@ CLASS_RE = re.compile(
     r"(?P<name>[A-Za-z_]\w*)",
     re.MULTILINE,
 )
-# Zeilen, die das Symbol *definieren* statt es zu benutzen.
+# Lines that *define* the symbol rather than using it.
 DEF_LINE_RE = re.compile(r"^[ \t]*(?:static[ \t]+)?func[ \t]+(?P<name>[A-Za-z_]\w*)")
 SIGNAL_DECL_RE = re.compile(r"^[ \t]*signal[ \t]+(?P<name>[A-Za-z_]\w*)")
-# Szenen-Anbindung: [connection signal="pressed" from="X" to="." method="_on_pressed"]
+# Scene binding: [connection signal="pressed" from="X" to="." method="_on_pressed"]
 TSCN_CONN_RE = re.compile(r'\[connection\b[^\]]*?method="(?P<name>[A-Za-z_]\w*)"')
 
 SKIP_DIRS = {
@@ -58,10 +58,10 @@ SKIP_DIRS = {
 
 
 def _iter_all_sources(root: Path):
-    """Definitionen **und** Referenzen: alle Quellsprachen plus Godot-Szenen.
+    """Yield definitions **and** references: all source languages plus Godot scenes.
 
-    `.tscn` enthält keinen Code, aber die Bindung — `[connection method=...]` ist
-    die einzige Spur eines Signal-Handlers.
+    `.tscn` contains no code, but holds the binding — `[connection method=...]` is
+    the only trace of a signal handler.
     """
     for path in iter_source_files(root):
         yield path
@@ -79,11 +79,11 @@ def _read(path: Path) -> str:
 
 
 def find(root, symbol: str, limit: int = 20, exact: bool = False) -> list[dict]:
-    """Definitionen, deren Name den Suchbegriff enthält (case-insensitiv).
+    """Find definitions whose name contains the search term (case-insensitive).
 
-    `exact=True` für das Anbindungs-Gate: Dort zählt nur die Definition mit
-    genau diesem Namen. Ohne den Filter frisst `limit` die Substring-Treffer
-    (`can_vault_a/b/c`) und die echte `func vault()` liegt hinter dem Abbruch.
+    `exact=True` for the wiring gate: there only the definition with this exact
+    name counts. Without the filter, `limit` is consumed by substring matches
+    (`can_vault_a/b/c`) and the real `func vault()` falls past the cutoff.
     """
     needle = symbol.strip().lower()
     if not needle:
@@ -92,8 +92,8 @@ def find(root, symbol: str, limit: int = 20, exact: bool = False) -> list[dict]:
     hits: list[dict] = []
     for path in iter_source_files(root):
         text = _read(path)
-        # Substring-Test ist um Größenordnungen billiger als zwei Regex-Läufe
-        # über jede Datei.
+        # Substring check is orders of magnitude cheaper than two regex passes
+        # across every file.
         if needle not in text.lower():
             continue
         rel = path.relative_to(root).as_posix()
@@ -114,9 +114,8 @@ def find(root, symbol: str, limit: int = 20, exact: bool = False) -> list[dict]:
                     "line": text.count("\n", 0, match.start()) + 1,
                     "kind": "func",
                     "symbol": name,
-                    # Ohne abschließenden Doppelpunkt/Klammer: die Signatur,
-                    # nicht die Zeile. Gilt für `func f():`, `def f():` und
-                    # `function f() {`.
+                    # Without trailing colon/brace: the signature, not the line.
+                    # Works for `func f():`, `def f():`, and `function f() {`.
                     "signature": raw_line.strip().rstrip(":{").strip(),
                 })
         for match in CLASS_RE.finditer(text):
@@ -140,7 +139,7 @@ def find(root, symbol: str, limit: int = 20, exact: bool = False) -> list[dict]:
 
 
 def _is_definition_line(line: str, needle: str) -> bool:
-    """Definiert diese Zeile das Symbol? Dann ist sie keine Benutzung."""
+    """Return True if this line defines the symbol (and is therefore not a usage)."""
     for pattern in DEF_PATTERNS:
         match = pattern.match(line)
         if match and match.group("name") == needle:
@@ -150,14 +149,14 @@ def _is_definition_line(line: str, needle: str) -> bool:
 
 
 def references(root, symbol: str, limit: int = 20) -> dict:
-    """Alle Stellen, die das Symbol *benutzen* — getrennt in Aufrufe und Referenzen.
+    """Find all places that *use* the symbol — split into calls and references.
 
-    `calls`  = `name(` — direkter Aufruf
-    `refs`   = `name` ohne Klammer: Signal-/Tween-Callable, `call("name")`,
-               `Callable(self, "name")`, `.tscn`-`[connection method="name"]`
+    `calls`  = `name(` — direct call
+    `refs`   = `name` without parentheses: signal/tween Callable, `call("name")`,
+               `Callable(self, "name")`, `.tscn` `[connection method="name"]`
 
-    Die Trennung ist wichtig: Ein Symbol mit 0 `calls`, aber 3 `refs` ist über
-    Signale gebunden und lebt. Ein Symbol mit 0 `calls` **und** 0 `refs` ist tot.
+    The distinction matters: a symbol with 0 `calls` but 3 `refs` is bound via
+    signals and is alive. A symbol with 0 `calls` **and** 0 `refs` is dead.
     """
     needle = symbol.strip()
     result = {"calls": [], "refs": [], "call_count": 0, "ref_count": 0}
@@ -175,7 +174,7 @@ def references(root, symbol: str, limit: int = 20) -> dict:
         rel = path.relative_to(root).as_posix()
 
         if path.suffix == ".tscn":
-            # In Szenen ist jede Erwähnung eine Bindung, nie eine Definition.
+            # In scenes every mention is a binding, never a definition.
             for number, line in enumerate(text.splitlines(), 1):
                 match = TSCN_CONN_RE.search(line)
                 if match and match.group("name") == needle:
@@ -190,15 +189,15 @@ def references(root, symbol: str, limit: int = 20) -> dict:
             stripped = line.strip()
             if stripped.startswith("#"):
                 continue
-            # Die Definitionszeile selbst ist keine Benutzung — in jeder
-            # Sprache, nicht nur bei `func`.
+            # The definition line itself is not a usage — in any language,
+            # not only for `func`.
             if _is_definition_line(line, needle):
                 continue
             decl_match = SIGNAL_DECL_RE.match(line)
             if decl_match and decl_match.group("name") == needle:
                 continue
-            # `class_name Foo` deklariert die Klasse — es benutzt sie nicht.
-            # Ohne diese Zeile besteht jede tote Klasse das Anbindungs-Gate.
+            # `class_name Foo` declares the class — it does not use it.
+            # Without this check, every dead class would pass the wiring gate.
             class_match = CLASS_RE.match(line)
             if class_match and class_match.group("name") == needle:
                 continue
@@ -217,7 +216,7 @@ def references(root, symbol: str, limit: int = 20) -> dict:
 
 
 def find_usages(root, symbol: str, limit: int = 20) -> list[dict]:
-    """Aufrufe **und** Referenzen als eine Liste — abwärtskompatibler Einstieg."""
+    """Return calls **and** references as a single list — backward-compatible entry point."""
     refs = references(root, symbol, limit=limit)
     return refs["calls"] + refs["refs"]
 
@@ -241,7 +240,7 @@ def render(root, symbol: str, limit: int = 20, with_usage: bool = False) -> str:
     else:
         lines.append(f"No definition for '{symbol}' — used, but not defined.")
 
-    # Immer: die Anbindung. Kostet zwei Zeilen und verhindert WO 8.
+    # Always include wiring info. Costs two lines and prevents WO 8.
     lines.append(
         f"Wiring: {usage['call_count']} call(s), "
         f"{usage['ref_count']} reference(s) (signal/Callable/.tscn)"

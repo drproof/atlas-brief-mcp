@@ -1,6 +1,6 @@
-"""Smoke-Test: startet den MCP-Server über stdio und spricht echtes JSON-RPC.
+"""Smoke test: start the MCP server over stdio and speak real JSON-RPC.
 
-Aufruf:
+Usage:
     uv run python scripts/smoke_mcp.py --root examples/demo-gdd
 """
 
@@ -31,9 +31,9 @@ def main() -> int:
     parser.add_argument("--root", required=True)
     args = parser.parse_args()
 
-    # Derselbe Interpreter, der dieses Skript startet. Der hartkodierte
-    # .venv-Pfad brach in jeder Umgebung ohne venv (CI: pip install, dann
-    # FileNotFoundError auf .venv/bin/python).
+    # Use the same interpreter that launched this script. A hardcoded .venv
+    # path broke in any environment without a local venv (CI: pip install,
+    # then FileNotFoundError on .venv/bin/python).
     python = Path(sys.executable)
     for candidate in (ROOT / ".venv" / "Scripts" / "python.exe",
                       ROOT / ".venv" / "bin" / "python"):
@@ -106,8 +106,8 @@ def main() -> int:
         if message_id == 1:
             info = result["serverInfo"]
             print(f"[ok] initialize  -> {info['name']} {info['version']}, protocol {result['protocolVersion']}")
-            # Die Instructions sind die einzige Regel, die ein Client ohne
-            # geladene AGENTS.md sieht — sie müssen im Handshake ankommen.
+            # Server instructions are the only rules a client sees when no
+            # AGENTS.md is loaded — they must arrive in the handshake.
             instructions = result.get("instructions") or ""
             missing = [needle for needle in
                        (".atlas/cache", "tests are green", "atlas_set_status", "row_key")

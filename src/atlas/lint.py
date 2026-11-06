@@ -1,7 +1,7 @@
-"""Struktur-Prüfung: findet, was das GDD für den Index schwer lesbar macht.
+"""Structure check: find formatting issues that hurt GDD indexing and retrieval.
 
-Kein Urteil über Inhalte — nur über Form. Die Befunde sind die Arbeitsliste
-für eine einmalige Sanierung des Google Docs.
+No judgment on content — only on structure. Findings serve as a cleanup
+checklist for a one-time pass over the Google Doc or Markdown files.
 """
 
 from __future__ import annotations
@@ -11,9 +11,9 @@ import re
 import sqlite3
 
 LINE_WO_RE = re.compile(r"Work\s*Order\s*(\d+)", re.IGNORECASE)
-# Dieselben Marker, die `status.py` als Status erkennt. Fehlten hier `DONE`/
-# `TODO`/`OPEN`, meldete lint eine Zeile als "ohne Status", die status.py sehr
-# wohl als erledigt liest.
+# Same markers that `status.py` recognizes as a status. If `DONE`/`TODO`/`OPEN`
+# were missing here, `lint` would flag a line as "missing status" even though
+# `status.py` reads it as completed.
 STATUS_RE = re.compile(r"✅|⬜|☑|☐|ERLEDIGT|OFFEN|\bDONE\b|\bTODO\b|\bOPEN\b",
                        re.IGNORECASE)
 ESCAPED_RE = re.compile(r"\\[.\-_*\[\]#!|>~]")
@@ -35,18 +35,18 @@ def _issue(kind: str, severity: str, row, detail: str, scope: str = "managed") -
 
 
 def _scope_of(path: str, managed: set[str] | None) -> str:
-    """Gehört diese Datei zu dem, was `atlas` verwaltet — oder ist sie Altbestand?
+    """Return whether this file is managed by `atlas` or discovered legacy docs.
 
-    Ohne `managed`-Liste ist alles verwaltet: Das ist der Stand vor `atlas init`
-    und der von Google-Docs-Projekten, wo es nur eine Quelle gibt. Wer nichts
-    konfiguriert, bekommt exakt das bisherige Verhalten.
+    Without a `managed` list, everything is managed: that is the state before
+    `atlas init` and for Google Docs projects where there is only one source.
+    With no configuration, behavior is unchanged.
     """
     if managed is None:
         return "managed"
     normalized = path.replace("\\", "/").lstrip("./")
     if normalized in managed:
         return "managed"
-    # Der Sync-Cache ist immer verwaltet: Google Docs sind die Quelle.
+    # The sync cache is always managed: Google Docs are the source of truth.
     if normalized.startswith(".atlas/cache/") or normalized.startswith(".gdd/cache/"):
         return "managed"
     return "discovered"
@@ -82,8 +82,8 @@ def lint(conn: sqlite3.Connection, max_issues: int = MAX_ISSUES,
                 "Heading without text — an empty heading line in the Google Doc")
 
         if heading and row["part"] == 1:
-            # Nur der erste Teil zählt: part 2..n sind Fortsetzungen derselben
-            # Überschrift, keine Duplikate.
+            # Only part 1 counts: parts 2..n are continuations of the same
+            # heading, not duplicates.
             key = f"{doc}::{heading.lower()}"
             heading_seen[key] = heading_seen.get(key, 0) + 1
 
@@ -97,8 +97,8 @@ def lint(conn: sqlite3.Connection, max_issues: int = MAX_ISSUES,
         if index + 1 < len(rows) and rows[index + 1]["doc_id"] == doc:
             next_level = rows[index + 1]["level"]
         is_leaf = next_level is None or next_level <= row["level"]
-        # Nur ungesplittete Abschnitte prüfen: part 2..n sind Fortsetzungen und
-        # naturgemäß kurz.
+        # Only check unsplit sections: parts 2..n are continuations and
+        # naturally short.
         if (is_leaf and row["part"] == 1 and row["parts"] == 1
                 and len(body.strip()) < 40 and heading
                 and heading not in ("(Preamble)", "(Präambel)")):
@@ -117,9 +117,9 @@ def lint(conn: sqlite3.Connection, max_issues: int = MAX_ISSUES,
             match = LINE_WO_RE.search(line)
             if not match:
                 continue
-            # Nur echte Status-Einträge prüfen: nach der Nummer muss ein Trenner
-            # folgen ("Work Order 4 — …"). Erwähnungen wie "API aus Work Order 4
-            # (unit.gd)" sind keine Statusangabe und kein Formfehler.
+            # Only check real status entries: a separator must follow the number
+            # ("Work Order 4 — …"). Mentions like "API from Work Order 4
+            # (unit.gd)" are prose references, not malformed status lines.
             tail = line[match.end(): match.end() + 3].strip()
             if not re.match(r"^[—–:\-]", tail):
                 continue
@@ -158,8 +158,8 @@ def lint(conn: sqlite3.Connection, max_issues: int = MAX_ISSUES,
         "sections": len(rows),
         "counts": dict(sorted(counts.items(), key=lambda item: -item[1])),
         "issues": issues,
-        # Nur was atlas selbst verwaltet, entscheidet über den Exit-Code.
-        # Fremde Alt-Doku wird gezeigt, aber nicht zur Abnahme gezählt.
+        # Only documents managed by atlas itself determine the exit code.
+        # Discovered legacy docs are reported, but do not fail acceptance.
         "ok": len(managed_issues) == 0,
         "managed_issues": len(managed_issues),
         "discovered_issues": len(issues) - len(managed_issues),

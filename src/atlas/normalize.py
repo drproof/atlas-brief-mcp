@@ -1,4 +1,4 @@
-"""Query-Normalisierung für deutsche Freitext-Fragen."""
+"""Query normalization for natural-language search queries (German and English)."""
 
 from __future__ import annotations
 
@@ -11,16 +11,16 @@ _FOLD = str.maketrans({
     "á": "a", "à": "a", "é": "e", "è": "e", "í": "i", "ó": "o", "ú": "u",
 })
 
-# Projekt-Aliase aus .atlas/aliases.yml: was der Agent tippt -> was im GDD steht.
+# Project aliases from .atlas/aliases.yml: what the agent types -> what the GDD calls it.
 _ALIASES: dict[str, list[str]] = {}
 _ALIAS_MTIME: float = -1.0
 
 
 def load_aliases(path) -> int:
-    """Lädt `.atlas/aliases.yml` (Schlüssel: Suchbegriff, Wert: Liste von Zielen).
+    """Load `.atlas/aliases.yml` (key: search term, value: list of target terms).
 
-    Die Datei gehört ins Projekt, nicht ins Tool: welche Synonyme sinnvoll sind,
-    weiß nur das jeweilige GDD. Wird bei Änderung neu gelesen (mtime-Vergleich).
+    The file belongs in the project, not the tool: only the project's GDD knows
+    which synonyms make sense. Reloaded when modified (mtime check).
     """
     global _ALIASES, _ALIAS_MTIME
     path = Path(path)
@@ -69,12 +69,12 @@ def aliases() -> dict[str, list[str]]:
 
 TOKEN_RE = re.compile(r"[A-Za-z0-9ÄÖÜäöüß_]+(?:-[A-Za-z0-9]+)*")
 
-# Frage- und Füllwörter, die in GDDs praktisch nie als Suchbegriff taugen.
-# Deutsch **und** Englisch: Agenten fragen oft englisch ("where is the combat
-# system described?"), und dann blieben `where`, `the`, `described` als
-# Suchterme stehen und verwaesserten das BM25-Ranking.
+# Question and filler words that are virtually useless as GDD search terms.
+# German **and** English: agents often ask in English ("where is the combat
+# system described?"), which would otherwise leave `where`, `the`, `described`
+# as search terms and dilute BM25 ranking.
 STOPWORDS = {
-    # Englisch
+    # English
     "where", "what", "when", "which", "who", "whom", "whose", "why", "how",
     "the", "a", "an", "is", "are", "was", "were", "be", "been", "being",
     "in", "of", "to", "for", "with", "on", "at", "by", "from", "into",
@@ -101,7 +101,7 @@ def fold(text: str) -> str:
 
 
 def terms(query: str) -> list[str]:
-    """Suchbegriffe ohne Stoppwörter, gefaltet, dedupliziert, längste zuerst."""
+    """Return search terms with stop words removed, folded, deduplicated, longest first."""
     folded = fold(query)
     raw = TOKEN_RE.findall(folded)
     keep: list[str] = []
@@ -112,9 +112,8 @@ def terms(query: str) -> list[str]:
             continue
         if token in STOPWORDS:
             continue
-        # 'Gewölbestürmer-Perk' ist EIN Token und steht so in keinem GDD.
-        # Die Einzelteile werden zusätzlich aufgenommen, damit der Bindestrich
-        # die Suche nicht komplett blockiert.
+        # 'Gewölbestürmer-Perk' is a single token and never appears verbatim in a GDD.
+        # Also include its hyphen-split parts so the hyphen does not block matching.
         candidates = [token]
         if "-" in token:
             candidates.extend(
@@ -127,7 +126,7 @@ def terms(query: str) -> list[str]:
             seen.add(candidate)
             keep.append(candidate)
 
-        # Projekt-Synonyme: 'hitpoints' soll 'max_hp' mitfinden.
+        # Project synonyms: 'hitpoints' should also match 'max_hp'.
         for alias in _ALIASES.get(token, []):
             if len(alias) >= 2 and alias not in seen:
                 seen.add(alias)
@@ -137,10 +136,10 @@ def terms(query: str) -> list[str]:
 
 
 def build_match(query: str) -> str | None:
-    """Baut einen FTS5-MATCH-Ausdruck: jeder Term als Präfix, OR-verknüpft.
+    """Build an FTS5 MATCH expression: each term as a prefix, joined with OR.
 
-    OR statt AND, weil BM25 Dokumente mit mehr Treffern ohnehin besser rankt —
-    AND würde bei natürlichen Fragen zu oft leer ausgehen.
+    OR instead of AND because BM25 already ranks documents matching more terms
+    higher — AND would too often return zero results on natural-language questions.
     """
     found = terms(query)
     if not found:

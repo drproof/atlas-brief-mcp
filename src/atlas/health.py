@@ -1,13 +1,13 @@
-"""Stille Degeneration laut machen — im Normalfall zum Preis von null Tokens.
+"""Surface silent degradation loudly — at zero token cost when healthy.
 
-Ein MCP-Server hat keinen Bildschirm für Warnungen. Wenn das Token beim Refresh
-seine Schreib-Scopes verliert, merkt das niemand: `atlas where` antwortet weiter
-korrekt, und erst der nächste `publish` scheitert — Stunden später, mitten in
-einer Aufgabe, mit einer Fehlermeldung, die nach Formatfehler klingt.
+An MCP server has no screen for warnings. If the token loses its write scopes
+on refresh, nobody notices: `atlas where` keeps answering normally, and only the
+next `publish` fails — hours later, mid-task, with an error that sounds like a
+formatting problem.
 
-Deshalb hängt sich an jede Tool-Antwort ein einzeiliger Kopf, **wenn** eine
-Invariante verletzt ist. Ist alles in Ordnung, ist der Kopf leer und kostet
-nichts. Geprüft wird nur lokal: Token-Datei und Audit-Log, kein Netz, < 5 ms.
+Therefore every tool response gets a single-line warning header **when** an
+invariant is violated. When everything is fine, the header is empty and costs
+nothing. Checks are strictly local: token file and audit log, no network, < 5 ms.
 """
 
 from __future__ import annotations
@@ -20,14 +20,14 @@ from pathlib import Path
 
 
 def _token_path() -> Path:
-    """Token-Datei: `~/.atlas/token.json`, bei Altzprojekten `~/.gdd/token.json`."""
+    """Return the token file: `~/.atlas/token.json`, or `~/.gdd/token.json` for legacy setups."""
     from . import gdocs
 
     return gdocs.global_dir() / "token.json"
 
 
 def _token_scopes() -> set[str] | None:
-    """Scopes, die im Token **gespeichert** sind. None = kein Token vorhanden."""
+    """Return scopes **stored** in the token file. None = no token present."""
     path = _token_path()
     if not path.exists():
         return None
@@ -40,7 +40,7 @@ def _token_scopes() -> set[str] | None:
 
 
 def _recent(root, limit: int = 20) -> list[dict]:
-    """Die letzten Audit-Einträge — rückwärts gelesen, nicht die ganze Datei."""
+    """Return the latest audit entries — read from the tail without loading the full file."""
     path = cache_dir(root) / "mutations.log"
     if not path.exists():
         return []
@@ -65,11 +65,11 @@ def _recent(root, limit: int = 20) -> list[dict]:
 
 
 def _entry_key(entry: dict) -> tuple:
-    """Woran ein späterer Erfolg erkennt, dass er diesen Fehlschlag aufhebt.
+    """Return the key by which a later success clears an earlier failure.
 
-    Work-Order-Writes haben eine Nummer. Sheet-Writes haben keine — sie wurden
-    früher alle unter `wo=None` einsortiert, sodass ein beliebiger späterer
-    Sheet-Write die Warnung für eine verschobene Zeile stumm löschte.
+    Work order writes have a number. Sheet writes do not — previously they all
+    bucketed under `wo=None`, so any subsequent sheet write silently cleared
+    the warning for a shifted row.
     """
     tool = str(entry.get("tool") or "write")
     if entry.get("wo") is not None:
@@ -83,7 +83,7 @@ def _entry_key(entry: dict) -> tuple:
 
 
 def _entry_label(entry: dict) -> str:
-    """Lesbare Bezeichnung — nie 'WO None'."""
+    """Return a human-readable label — never 'WO None'."""
     tool = entry.get("tool") or "write"
     if entry.get("wo") is not None:
         return f"{tool} WO {entry['wo']}"
@@ -95,14 +95,14 @@ def _entry_label(entry: dict) -> str:
 
 
 def warnings(root) -> list[str]:
-    """Verletzte Invarianten. Leere Liste = alles in Ordnung."""
+    """Return violated invariants. Empty list = all clear."""
     from . import gdocs
 
     found: list[str] = []
     recent = _recent(root)
     ever_wrote = any(entry.get("verified") is True and entry.get("source") != "local" for entry in recent)
 
-    # 1. Schreib-Scopes verloren, obwohl schon einmal geschrieben wurde.
+    # 1. Write scopes lost even though a remote write succeeded previously.
     if ever_wrote:
         scopes = _token_scopes()
         if scopes is not None:
@@ -114,10 +114,10 @@ def warnings(root) -> list[str]:
                     "re-run `atlas auth`, otherwise every write will fail."
                 )
 
-    # 2. Ein Write blieb unbestätigt — und wurde nicht später bestätigt.
-    #    Ein `refused` ist **kein** Fehler: Da hat das Gate korrekt geblockt.
-    #    Gemeldet wird nur, was geschrieben wurde und trotzdem nicht im Dokument
-    #    steht. Pro Work Order einmal, nicht bei jedem Tool-Aufruf neu.
+    # 2. A write remained unverified — and was not confirmed by a later retry.
+    #    A `refused` entry is **not** an error: the gate blocked it as intended.
+    #    Only report writes that were sent but not confirmed in the document.
+    #    Once per work order, not repeated for every log line.
     if recent:
         resolved: set = set()
         pending: list[dict] = []
@@ -126,12 +126,12 @@ def warnings(root) -> list[str]:
             if entry.get("verified") is True:
                 resolved.add(key)
                 continue
-            # Auch ältere Log-Zeilen erkennen: Refusals enden auf `_refused`,
-            # bevor `refused=True` mitgeschrieben wurde.
+            # Also recognize older log entries: refusals ended with `_refused`
+            # before `refused=True` was recorded explicitly.
             if entry.get("refused") or str(entry.get("tool", "")).endswith("_refused"):
                 continue
-            # Nur echte Fehlschläge: Einträge ohne `verified` (z. B. ein reiner
-            # Lesevorgang) sind keine unbestätigten Writes.
+            # Only real failures: entries without `verified` (e.g. a pure read)
+            # are not unverified writes.
             if entry.get("verified") is not False:
                 continue
             if key in resolved:
@@ -149,10 +149,10 @@ def warnings(root) -> list[str]:
 
 
 def header(root) -> str:
-    """Einzeiliger Warnkopf oder '' — niemals eine Exception."""
+    """Return a single-line warning header or '' — never raises."""
     try:
         found = warnings(root)
-    except Exception:  # Diagnose darf die Tool-Antwort nie zerstören
+    except Exception:  # diagnostics must never break a tool response
         return ""
     if not found:
         return ""

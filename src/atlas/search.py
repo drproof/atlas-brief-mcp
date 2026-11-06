@@ -1,4 +1,4 @@
-"""Suchschicht: BM25, Boni, Budget-Kappung."""
+"""Search layer: BM25, heading boosts, and character-budget clamping."""
 
 from __future__ import annotations
 
@@ -31,15 +31,15 @@ def _trim(text: str, limit: int) -> tuple[str, bool]:
 
 _MD_NOISE = [
     (re.compile(r"«(\S{1,4})»"), r"\1"),      # »Raketen«-»Abwehr« -> »Raketen-Abwehr«
-    (re.compile(r"\*\*|__"), ""),              # Fett-Marker
-    (re.compile(r"`+"), ""),                   # Inline-Code
-    (re.compile(r"\s*\|\s*"), " | "),          # Tabellen-Gitter
+    (re.compile(r"\*\*|__"), ""),              # bold markers
+    (re.compile(r"`+"), ""),                   # inline code
+    (re.compile(r"\s*\|\s*"), " | "),          # table grid
     (re.compile(r"[ \t]+"), " "),
 ]
 
 
 def clean_snippet(text: str) -> str:
-    """Entfernt Markdown-Rauschen aus FTS5-Snippets (spart Tokens)."""
+    """Strip Markdown noise from FTS5 snippets (saves tokens)."""
     for pattern, replacement in _MD_NOISE:
         text = pattern.sub(replacement, text)
     return text.strip()
@@ -63,14 +63,14 @@ def run_search(
     if not rows:
         return []
 
-    # Work-Order-Logbücher wiederholen alle System- und Klassennamen und gewinnen
-    # dadurch bei Systemfragen gegen die Dokumentation. Abwerten, nicht ausblenden:
-    # bei Begriffen, die nur dort stehen ('Kriegshorn'), bleiben sie nützlich.
+    # Work order logbooks repeat every system and class name and would otherwise
+    # outrank the actual design sections on system queries. Downrank rather than
+    # hide: for terms that appear only there ('Kriegshorn'), they remain useful.
     log_penalties = _log_penalty(conn, rows)
 
     wanted = terms(query)
-    # Auch Teilwörter für den Heading-Boost: 'helden-klassen' soll 'Helden, Skills
-    # & 3D-Camp' treffen, nicht am Bindestrich scheitern.
+    # Also include hyphen-split parts for the heading boost: 'helden-klassen'
+    # should match 'Helden, Skills & 3D-Camp' rather than failing on the hyphen.
     wanted_parts: set[str] = set()
     for term in wanted:
         wanted_parts.add(term)
@@ -80,18 +80,18 @@ def run_search(
     for row in rows:
         if doc and row["doc_id"] != doc:
             continue
-        score = float(row["score"])  # bm25 ist negativ: kleiner = besser
+        score = float(row["score"])  # bm25 is negative: smaller = better
         heading_folded = fold(row["heading"])
         if any(part in heading_folded for part in wanted_parts):
             score *= 1.5
         if row["level"] == 2:
             score *= 1.1
-        # Inhaltsverzeichnis-Zeilen ('Tab 1 … Tab 2 …') listen alle Stichworte
-        # des Dokuments auf und verdrängen sonst die echten Themenseiten.
+        # Table-of-contents lines ('Tab 1 … Tab 2 …') list every keyword in the
+        # document and would otherwise crowd out the actual topic sections.
         if _looks_like_index(row["body"] or ""):
             score /= 2.5
-        # Work-Order-Logbuch: wiederholt alle Systemnamen und verdrängt damit die
-        # Themenseiten (siehe _log_penalty).
+        # Work order logbook: repeats all system names and crowds out topic
+        # sections (see _log_penalty).
         score *= log_penalties.get((row["doc_id"], row["heading"]), 1.0)
         results.append({
             "anchor": row["anchor"],
@@ -132,10 +132,10 @@ def _in_vocab(conn: sqlite3.Connection, token: str) -> bool:
 
 
 def _looks_like_index(body: str) -> bool:
-    """Erkennt Inhaltsverzeichnis-/Navigationszeilen.
+    """Detect table-of-contents / navigation lines.
 
-    Solche Zeilen listen alle Stichworte des Dokuments auf und konkurrieren
-    dadurch mit jeder Themenseite.
+    Such lines list every keyword in the document and therefore compete with
+    every topic section.
     """
     if body.count("Tab ") >= 2:
         return True
@@ -146,31 +146,29 @@ def _looks_like_index(body: str) -> bool:
 
 WO_LINE_RE = re.compile(r"Work\s*Order\s*\d+\s*[—–:\-]", re.IGNORECASE)
 
-# Ab dieser Zahl von Work-Order-Zeilen ist ein Abschnitt ein Logbuch.
-# Vorher stand hier 3 — damit galt auch der Prototyp-Meilenstein-Plan mit fünf
-# Einträgen als Logbuch und verlor gegen jeden Fließtext-Absatz.
+# Minimum number of work order lines for a section to be treated as a logbook.
+# Previously set to 3 — which also penalized a 5-entry prototype milestone plan
+# against ordinary prose paragraphs.
 LOG_MIN_LINES = 8
-# Ab hier ist es ein echtes Logbuch: voller Malus.
+# Threshold for a full logbook: maximum penalty.
 LOG_HARD_LINES = 16
-# Überschriften, die eine Übersicht ankündigen — nie ein Logbuch, egal wie
-# viele Work Orders darunter stehen.
-# Ueberschriften, die eine Uebersicht ANKUENDIGEN. Bewusst ohne "work orders"
-# und "status": genau so heisst das Logbuch in den meisten Projekten, und der
-# Hint haette die Anzahl-Regel darunter ausgehebelt — ein 30-Zeilen-Logbuch
-# haette dann wieder jede Systemfrage gewonnen.
+# Headings that announce an overview — never a logbook, regardless of how many
+# work orders are listed underneath.
+# Deliberately excludes "work orders" and "status": that is what the logbook
+# itself is called in most projects, and including them would bypass the line-
+# count rule below — letting a 30-line logbook win every system query again.
 LOG_HEADING_HINTS = ("plan", "meilenstein", "milestone", "roadmap", "übersicht",
                      "overview", "fahrplan", "backlog", "statusübersicht")
 
 
 def _log_penalty(conn: sqlite3.Connection, rows) -> dict[tuple[str, str], float]:
-    """Score-Malus für Abschnitte, die ein Work-Order-Logbuch sind.
+    """Compute a score penalty factor for sections that are work order logbooks.
 
-    Der Chunker zerlegt einen langen Abschnitt in Teile von 1500 Zeichen. Ein
-    einzelner Teil enthält dann nur 1–2 Work-Order-Zeilen und sieht wie ein
-    normaler Abschnitt aus. Deshalb wird über **alle** Teile eines Headings
-    gezählt, nicht pro Teil.
+    The chunker splits a long section into 1,500-character parts. A single part
+    may contain only 1–2 work order lines and look like a normal section. Count
+    across **all** parts of a heading rather than per part.
 
-    Rückgabe: `{(doc_id, heading): faktor}`. Fehlt ein Heading, gilt 1.0.
+    Returns: `{(doc_id, heading): factor}`. Missing headings default to 1.0.
     """
     verdict: dict[tuple[str, str], float] = {}
     for row in rows:
@@ -188,20 +186,20 @@ def _log_penalty(conn: sqlite3.Connection, rows) -> dict[tuple[str, str], float]
         if total < LOG_MIN_LINES:
             verdict[key] = 1.0
         elif total < LOG_HARD_LINES:
-            verdict[key] = 0.5   # halber Malus: Übersicht mit vielen Einträgen
+            verdict[key] = 0.5   # half penalty: overview with many entries
         else:
-            verdict[key] = 0.25  # voller Malus: Logbuch
+            verdict[key] = 0.25  # full penalty: logbook
     return {key: factor for key, factor in verdict.items() if factor < 1.0}
 
 
 def _compound_clause(conn: sqlite3.Connection, query: str) -> str | None:
-    """Komposita-Klausel für Wörter, die es im Index nicht gibt.
+    """Build a compound-word FTS clause for terms that do not exist whole in the index.
 
-    „Gewölbestürmer" steht im GDD als „Gewölbe-Stürmer" — als ein Token trifft das
-    nie. Die Teile treffen gemeinsam: `("gewolbe"* AND "sturmer"*)`.
+    "Gewölbestürmer" is written in the GDD as "Gewölbe-Stürmer" — as a single
+    token it never matches. Its parts match together: `("gewolbe"* AND "sturmer"*)`.
 
-    Die Klausel wird **zusätzlich** zur normalen Suche verodert, nicht als Ersatz:
-    sonst blockiert ein häufiges Wort wie „perk" den präzisen Komposita-Treffer.
+    The clause is **OR-ed** onto the normal query rather than replacing it:
+    otherwise a common word like "perk" would suppress the precise compound match.
     """
     clauses: list[str] = []
     for term in terms(query):
@@ -221,8 +219,8 @@ def _compound_clause(conn: sqlite3.Connection, query: str) -> str | None:
         if len(unique) >= 2:
             clauses.append("(" + " AND ".join(f'"{piece}"*' for piece in unique[:2]) + ")")
         elif len(longest) >= 6:
-            # Nur ein Teil belegt ('Rüstungsregeln' -> 'rustungs'): als Präfix
-            # nehmen. Erst ab 6 Zeichen, sonst wird daraus Rauschen.
+            # Only one part attested ('Rüstungsregeln' -> 'rustungs'): use as a
+            # prefix. Require at least 6 chars to avoid noise.
             clauses.append(f'"{longest}"*')
     return " OR ".join(clauses) or None
 
@@ -254,8 +252,8 @@ def where(conn: sqlite3.Connection, topic: str, max_chars: int = 400) -> str:
         "read_with": f'atlas_read("{base}")',
     }
     text = _dumps(payload)
-    # Der breadcrumb ist die wichtigste Zusatzinfo ("in welchem Tab?"), also
-    # wird er als letztes geopfert — nicht gleichzeitig mit den Alternativen.
+    # The breadcrumb is the most valuable extra context ("which tab?"), so drop
+    # it last — not at the same time as the alternatives.
     if len(text) > budget:
         payload.pop("alternatives", None)
         text = _dumps(payload)
@@ -269,13 +267,13 @@ def where(conn: sqlite3.Connection, topic: str, max_chars: int = 400) -> str:
 
 
 def _shrink(payload: dict[str, Any], budget: int) -> str:
-    """Reduziert eine Trefferliste stufenweise, bis sie ins Budget passt.
+    """Progressively shrink a hit list until it fits within the character budget.
 
-    Terminiert garantiert: Am Ende bleiben 0 Treffer plus Hinweis.
+    Guaranteed to terminate: falls back to 0 hits plus a hint.
 
-    `truncated` wird **vor** jedem Budget-Vergleich gesetzt. Früher geschah das
-    danach — die Antwort war dann um die 19 Zeichen des Feldes zu lang, also
-    genau an der Stelle über dem Limit, die sie einhalten sollte.
+    `truncated` is set **before** each budget check. Previously it was added
+    afterward — pushing the response 19 characters over the exact limit it was
+    supposed to respect.
     """
     text = _dumps(payload)
     if len(text) <= budget:
@@ -347,9 +345,10 @@ def read(
     first = rows[0]
     body = "\n\n".join(row["body"] for row in rows).strip()
 
-    # Gliederungsköpfe wie "## 4. Kampfsystem" haben oft keinen eigenen Text —
-    # der Inhalt steht in den Unterabschnitten. Ohne diesen Fallback liefert
-    # atlas_read eine leere Antwort und der Agent liest doch die ganze Datei.
+    # Container headings like "## 4. Combat System" often have no body text of
+    # their own — the content lives in the subsections. Without this fallback,
+    # `atlas_read` returns an empty body and the agent falls back to reading the
+    # entire file.
     children_included = 0
     if len(body) < 80:
         kids = conn.execute(

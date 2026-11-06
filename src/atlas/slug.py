@@ -1,4 +1,4 @@
-"""Anker-Slugs: stabil, ASCII, kollisionsfrei."""
+"""Anchor slugs: stable, ASCII, collision-free."""
 
 from __future__ import annotations
 

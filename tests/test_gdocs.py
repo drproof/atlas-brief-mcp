@@ -1,11 +1,11 @@
-"""Query-Bau ohne Netzwerk — Regressionstest für den Drive-Filter-Bug."""
+"""Offline query building — regression test for the Drive filter bug."""
 
 from atlas.gdocs import build_query
 
 
 def test_mime_types_are_parenthesized():
-    """Ohne Klammern gilt 'name contains' nur für den zweiten Mime-Typ und die
-    Query liefert ALLE Google-Docs des Kontos (real passiert am 04.11.2026)."""
+    """Without parentheses, 'name contains' applies only to the second MIME type
+    and the query returns ALL Google Docs of the account (happened on 2026-11-04)."""
     query = build_query("MYPROJECT")
     assert query.startswith("(mimeType")
     assert "or mimeType" in query.split(")")[0]

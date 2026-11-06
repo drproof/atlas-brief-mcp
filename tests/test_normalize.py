@@ -1,8 +1,8 @@
-"""Query-Normalisierung: Ein Bindestrich darf die Suche nicht blockieren.
+"""Query normalization: a hyphen must not block search.
 
-Praxis-Fall: Das GDD schreibt „Gewölbe-Stürmer", der Agent fragt nach
-„Gewölbestürmer-Perk". Der FTS5-Tokenizer zerlegt den Dokumenttext am
-Bindestrich in zwei Wörter — die Query mit Bindestrich trifft dann nie.
+Real-world case: the GDD writes "Gewölbe-Stürmer" while the agent asks for
+"Gewölbestürmer-Perk". The FTS5 tokenizer splits document text at the
+hyphen into two words — a hyphenated query would never match without expansion.
 """
 
 from __future__ import annotations
@@ -34,7 +34,7 @@ def test_stopwords_still_dropped():
 
 
 # --------------------------------------------------------------------------
-# Projekt-Aliase (.atlas/aliases.yml)
+# Project aliases (.atlas/aliases.yml)
 # --------------------------------------------------------------------------
 
 import pytest
@@ -72,5 +72,5 @@ def test_alias_file_is_reread_on_change(tmp_path):
 
     path.write_text("aliases:\n  hp: [max_hp]\n  geld: [gold_pouch]\n", encoding="utf-8")
     import os
-    os.utime(path, (0, 0))  # mtime erzwingen, sonst greift der Cache
+    os.utime(path, (0, 0))  # Force mtime change to bypass cache
     assert normalize.load_aliases(path) == 2

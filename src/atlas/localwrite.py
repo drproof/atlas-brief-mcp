@@ -1,13 +1,13 @@
-"""Schreiben in lokale Markdown-Doku — ohne Google-Konto.
+"""Write to local Markdown documentation — without a Google account.
 
-`atlas init` legt eine `docs/ARCHITECTURE.md` mit `Work Order 1 — ⬜ OFFEN` an
-und schreibt eine `AGENTS.md`, die den Agenten verpflichtet, den Status per
-Tool-Call zu setzen. Ohne Google-Token lief genau dieser Pfad bisher in eine
-Sackgasse („Statuszeile in keinem Dokument gefunden") — der erste Eindruck
-eines neuen Nutzers war ein Fehler.
+`atlas init` creates `docs/ARCHITECTURE.md` with `Work Order 1 — ⬜ OPEN`
+and writes an `AGENTS.md` instructing the agent to update status via tool
+calls. Without a Google token, that path previously hit a dead end ("status
+line not found in any document") — making a new user's first impression an
+error.
 
-Dieses Modul schließt den Kreis: derselbe Vertrag, dieselbe Verifikation,
-dasselbe Audit-Log — nur gegen die Datei statt gegen die Docs API.
+This module closes the loop: the same contract, the same verification, and
+the same audit log — backed by local files instead of the Docs API.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from pathlib import Path
 
 STATUS_MARK = {"done": "✅ DONE", "open": "⬜ OPEN"}
 SEPARATORS = ("—", "–", "-", ":")
-# Beide Schreibweisen: deutsch (bestehende Dokumente) und englisch (neu).
+# Both spellings: German (existing documents) and English (new).
 _OLD_MARK_RE = re.compile(
     r"^(?:✅\s*(?:ERLEDIGT|DONE)|⬜\s*(?:OFFEN|OPEN)|☑\s*(?:ERLEDIGT|DONE)"
     r"|☐\s*(?:OFFEN|OPEN))\s*",
@@ -34,11 +34,11 @@ def _line_re(wo: int) -> re.Pattern:
 
 
 def targets(root: Path) -> list[Path]:
-    """Lokale Doku-Dateien, in denen Work Orders stehen können.
+    """Return local documentation files that may contain work orders.
 
-    Reihenfolge: was `atlas init` verwaltet, dann alles andere Markdown im
-    Projekt. Die Liste ist bewusst klein — gesucht wird nur in Dateien, die
-    tatsächlich eine Work-Order-Zeile enthalten.
+    Order: files managed by `atlas init` first, followed by all other Markdown
+    files in the project. The list is kept small — only files that actually
+    contain a work order line are modified.
     """
     from . import bootstrap
     from .config import discover
@@ -56,7 +56,7 @@ def targets(root: Path) -> list[Path]:
 
 
 def find_line(root: Path, wo: int) -> tuple[Path, str, re.Match] | None:
-    """Die Datei und Zeile, die diese Work Order dokumentiert."""
+    """Return the file and regex match documenting this work order."""
     pattern = _line_re(wo)
     for path in targets(root):
         try:
@@ -70,7 +70,7 @@ def find_line(root: Path, wo: int) -> tuple[Path, str, re.Match] | None:
 
 
 def _replace_mark(rest: str, mark: str) -> str:
-    """Tauscht nur den Statusmarker, nicht den Titel."""
+    """Replace only the status marker, preserving the title."""
     if _OLD_MARK_RE.match(rest):
         return _OLD_MARK_RE.sub(f"{mark} ", rest, count=1).rstrip()
     return f"{mark} {rest}".strip() if rest else mark
@@ -84,7 +84,7 @@ def _write_atomic(path: Path, text: str) -> None:
 
 def set_status(root: Path, conn, wo: int, status: str,
                dry_run: bool = False) -> dict:
-    """Ändert den Status einer Work Order in der lokalen Doku."""
+    """Update the status of a work order in local documentation."""
     from . import audit, indexer
 
     mark = STATUS_MARK.get(status.lower())
@@ -133,7 +133,7 @@ def set_status(root: Path, conn, wo: int, status: str,
 
     _write_atomic(path, text[: match.start()] + new_line + text[match.end():])
 
-    # Selbstverifikation: aus der Datei zurücklesen, nicht aus dem Speicher.
+    # Self-verification: read back from disk, not from memory.
     confirmed = find_line(root, wo)
     verified = bool(confirmed and mark in confirmed[2].group(0))
     payload["verified"] = verified
@@ -150,7 +150,7 @@ def set_status(root: Path, conn, wo: int, status: str,
 
 def publish(root: Path, conn, wo: int, line: str, section: str,
             dry_run: bool = False) -> dict:
-    """Legt eine Work-Order-Zeile in der lokalen Doku an."""
+    """Append a work order line to local documentation."""
     from . import audit, indexer
 
     if find_line(root, wo) is not None:
@@ -202,7 +202,7 @@ def publish(root: Path, conn, wo: int, line: str, section: str,
 
 
 def _insert_into_section(text: str, section: str, line: str) -> tuple[str, int]:
-    """Hängt die Zeile ans Ende des Abschnitts (sonst ans Dateiende)."""
+    """Append the line to the end of the target section (or end of file)."""
     lines = text.splitlines()
     start = None
     needle = section.strip().casefold()
@@ -216,11 +216,11 @@ def _insert_into_section(text: str, section: str, line: str) -> tuple[str, int]:
             break
 
     if start is None:
-        # Kein Abschnitt: ans Ende, mit Leerzeile davor.
+        # Section not found: append at the end, preceded by a blank line.
         body = text.rstrip("\n")
         return f"{body}\n\n{line}\n", len(body) + 2
 
-    # Ende des Abschnitts: nächste Überschrift gleicher oder höherer Ebene.
+    # End of section: next heading of the same or higher level.
     level = len(lines[start]) - len(lines[start].lstrip("#"))
     end = len(lines)
     for index in range(start + 1, len(lines)):
@@ -231,7 +231,7 @@ def _insert_into_section(text: str, section: str, line: str) -> tuple[str, int]:
             end = index
             break
 
-    # Leerzeilen am Abschnittsende nicht mitzählen, aber eine behalten.
+    # Skip trailing blank lines at the end of the section, keeping one after.
     insert_at = end
     while insert_at > start + 1 and not lines[insert_at - 1].strip():
         insert_at -= 1

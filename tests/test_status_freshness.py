@@ -1,4 +1,4 @@
-"""Status-Antwort: lesbar, vollständig und mit belegbarem Alter."""
+"""Status output: readable, complete, and with verifiable freshness."""
 
 from __future__ import annotations
 
@@ -67,7 +67,7 @@ def test_status_text_is_readable_and_complete():
     assert "⬜ WO 15" in text
     assert "Documents: 4" in text
     assert "As of:" in text
-    # Kein JSON-Korsett: der Agent soll die Antwort nicht nachformatieren müssen.
+    # No JSON wrapper: the agent should not have to reformat the response.
     assert "{" not in text
 
 

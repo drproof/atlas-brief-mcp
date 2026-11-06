@@ -1,4 +1,4 @@
-"""Auto-Sync darf nie den Tool-Call blockieren oder sprengen."""
+"""Auto-sync must never block or break a tool call."""
 
 from __future__ import annotations
 

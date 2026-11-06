@@ -1,4 +1,4 @@
-"""Health-Warnungen: still wenn alles gut, laut wenn eine Invariante bricht."""
+"""Health warnings: silent when everything is fine, loud when an invariant breaks."""
 
 from __future__ import annotations
 
@@ -23,7 +23,7 @@ def _token(tmp_path, scopes: list[str], monkeypatch) -> None:
 
 def test_silent_when_nothing_is_wrong(tmp_path, monkeypatch):
     _log(tmp_path, [{"tool": "publish", "wo": 13, "verified": True}])
-    # Nicht raten, sondern die echte Liste: sie enthält auch die Read-Scopes.
+    # Use the actual scope list rather than guessing: it includes read scopes too.
     _token(tmp_path, sorted(gdocs.WRITE_SCOPES), monkeypatch)
 
     assert health.warnings(tmp_path) == []
@@ -31,7 +31,7 @@ def test_silent_when_nothing_is_wrong(tmp_path, monkeypatch):
 
 
 def test_loud_when_write_scopes_were_lost(tmp_path, monkeypatch):
-    """Der Bug vom 04.11.: ein Leseaufruf löschte beim Refresh die Schreibrechte."""
+    """The 2026-11-04 bug: a read call dropped write permissions during token refresh."""
     _log(tmp_path, [{"tool": "publish", "wo": 6, "verified": True}])
     _token(tmp_path, ["https://www.googleapis.com/auth/drive.readonly"], monkeypatch)
 
@@ -42,7 +42,7 @@ def test_loud_when_write_scopes_were_lost(tmp_path, monkeypatch):
 
 
 def test_read_only_token_without_history_is_not_an_error(tmp_path, monkeypatch):
-    """Wer nie geschrieben hat, hat auch keine Rechte *verloren*."""
+    """Someone who never wrote anything has not *lost* write permissions."""
     _log(tmp_path, [])
     _token(tmp_path, ["https://www.googleapis.com/auth/drive.readonly"], monkeypatch)
 
@@ -71,7 +71,7 @@ def test_later_success_resolves_the_warning(tmp_path, monkeypatch):
 
 
 def test_refusal_is_not_a_warning(tmp_path, monkeypatch):
-    """Ein vom Gate geblockter Write ist korrektes Verhalten, kein Defekt."""
+    """A write blocked by the gate is expected behavior, not a failure."""
     _log(tmp_path, [
         {"tool": "set_status_refused", "wo": 8, "refused": True,
          "written": False, "verified": False},
@@ -98,7 +98,7 @@ def test_header_never_raises(tmp_path, monkeypatch):
 
 
 def test_local_write_does_not_demand_google_write_scopes(tmp_path, monkeypatch):
-    """Ein lokaler Markdown-Write braucht kein Google-Schreibtoken."""
+    """A local Markdown write does not require a Google write token."""
     _log(tmp_path, [{"tool": "set_status", "wo": 1, "source": "local", "verified": True}])
     _token(tmp_path, ["https://www.googleapis.com/auth/drive.readonly"], monkeypatch)
 

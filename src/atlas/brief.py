@@ -1,8 +1,8 @@
-"""Task-Brief: baut aus dem Index einen fertigen Delegations-Prompt.
+"""Task brief: build a ready-to-use delegation prompt from the index.
 
-Kein Modell, keine Halluzination — nur echte Suchtreffer, echte Code-Zuordnungen
-und die Projekt-Leitplanken. Funktioniert als CLI (Copy-Paste in jeden Chat)
-und als MCP-Tool.
+No model, no hallucination — only real search hits, real code mappings,
+and project guardrails. Works both as a CLI (copy-paste into any chat)
+and as an MCP tool.
 """
 
 from __future__ import annotations
@@ -21,8 +21,8 @@ MAX_SECTIONS = 5
 SECTION_CHARS = 1600
 MAX_CHARS = 8000
 
-# Code-Pfade stehen im GDD meist im Fließtext ("scripts/camp_hub.gd"), nicht im
-# Frontmatter. Deshalb werden sie aus den Trefferabschnitten extrahiert.
+# Code paths in the GDD usually appear inline in prose ("scripts/camp_hub.gd"),
+# not in frontmatter. Extract them from the matched sections.
 FILE_RE = re.compile(
     r"(?:res://)?(?:scripts|scenes|shaders|assets|quests|data|tools|addons)"
     r"/[\w./-]+\.(?:gd|tscn|tres|json|gdshader|glsl)",
@@ -31,7 +31,7 @@ FILE_RE = re.compile(
 
 
 def _parse_list(raw: str) -> list[str]:
-    """Frontmatter-Listen wurden als str() abgelegt — beide Formen akzeptieren."""
+    """Frontmatter lists are stored via str() — accept both forms."""
     if not raw:
         return []
     text = raw.strip()
@@ -50,11 +50,11 @@ RULES_LIMIT = 2600
 
 
 def _load_rules(root: Path) -> str:
-    """Projekt-Leitplanken — AGENTS.md hat Vorrang vor Altlasten.
+    """Load project guardrails — AGENTS.md takes precedence over legacy files.
 
-    Eine daneben liegende alte `rules.md` darf AGENTS.md nicht verdrängen: sie
-    enthielt überholte Timeouts und keine GDD-Pflicht. Der Agent hätte dann nach
-    Regeln gearbeitet, die seit Wochen falsch sind.
+    An older `rules.md` sitting next to it must not shadow `AGENTS.md`: it
+    contained outdated timeouts and no GDD requirement, causing the agent to
+    follow rules that had been wrong for weeks.
     """
     for candidate in (root / "AGENTS.md", cache_dir(root) / "rules.md",
                       root / "rules.md", root / "CLAUDE.md"):
@@ -69,11 +69,11 @@ def _load_rules(root: Path) -> str:
 
 
 def _trim_rules(text: str) -> str:
-    """Nur der GDD-Teil der Leitplanken — der Rest steht ohnehin in AGENTS.md.
+    """Keep only the GDD portion of the guardrails — the rest is in AGENTS.md anyway.
 
-    Geschnitten wird am ersten `## 1.`-Abschnitt, aber nur wenn davor ein
-    `## 0.` steht (das ist der GDD-Block). Sonst ist die Datei flach und wird
-    nur am Längenlimit gekürzt — sonst bliebe von ihr nichts übrig.
+    Cut at the first `## 1.` section, but only when preceded by a `## 0.`
+    section (the GDD block). Otherwise the file is flat and is only truncated
+    at the length limit — otherwise nothing would remain of it.
     """
     match = re.search(r"\n##\s*1\.", text)
     if match and match.start() > 0 and re.search(r"\n##\s*0\.", text[: match.start()]):
@@ -95,7 +95,7 @@ def build(
     work_order: int | None = None,
     extra_files: list[str] | None = None,
 ) -> str:
-    """Erzeugt den Brief als Markdown."""
+    """Build the task brief as Markdown."""
     hits = search_mod.run_search(conn, goal, k=max_sections * 3)
 
     selected: list[dict] = []

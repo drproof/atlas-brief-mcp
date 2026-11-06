@@ -1,19 +1,19 @@
-"""Deterministische Sheet-Mutationen: Zeilen-Schlüssel + Spaltenname -> A1-Zelle.
+"""Deterministic spreadsheet mutations: row key + column name -> A1 cell.
 
-Der Agent nennt `row_key="monster_goblin"` und `{"HP": 45}`. Er nennt **nie**
-`C14`. Koordinaten (Zeile, Spalte, Buchstabe) rechnet ausschließlich Python aus.
+The agent passes `row_key="monster_goblin"` and `{"HP": 45}`. It **never** passes
+`C14`. Cell coordinates (row, column, letter) are computed exclusively by Python.
 
-Warum: LLMs verzählen sich in Tabellen systematisch — Header, Trennlinie,
-0- vs. 1-basiert. Ein verschobener Schreibvorgang überschreibt den Nachbareintrag
-und fällt niemandem auf. Deshalb gibt es hier keine Koordinaten-Eingabe.
+Why: LLMs systematically miscount rows and columns in tables — header rows,
+separator lines, 0- vs. 1-based indexing. An off-by-one write overwrites a
+neighboring entry silently. Therefore raw cell coordinates are not accepted.
 
-Drei Regeln, die das Modul durchsetzt:
-1. **Whitelist** — nur Spreadsheets, die als Quelle in `sync_state` stehen.
-2. **Namensauflösung** — Spalten werden über den Header gesucht, nie über einen
-   Index. Unbekannte Spalte -> Fehler *mit Liste der erlaubten Header*, damit der
-   Agent im zweiten Versuch selbst korrigiert.
-3. **Rücklesen** — nach dem Schreiben werden genau die geänderten Zellen erneut
-   gelesen. `verified` ist der entscheidende Rückgabewert, nicht "hat nicht geworfen".
+Three rules enforced by this module:
+1. **Whitelist** — only spreadsheets registered in `sync_state` are writable.
+2. **Header resolution** — columns are looked up by header name, never by index.
+   Unknown column -> error *with the list of valid headers*, so the agent can
+   self-correct on the next call.
+3. **Read-back** — after writing, the exact modified cells are read back.
+   `verified` is the authoritative status, not "did not raise".
 """
 
 from __future__ import annotations
@@ -27,15 +27,15 @@ SHEET_MIME = gdocs.SHEET_MIME
 
 
 class SheetError(ValueError):
-    """Fehler mit Handlungsanweisung — landet direkt im Tool-Output."""
+    """Error with an actionable instruction — returned directly in tool output."""
 
 
 # --------------------------------------------------------------------------
-# A1-Notation
+# A1 notation
 # --------------------------------------------------------------------------
 
 def col_letter(index: int) -> str:
-    """0-basierter Spaltenindex -> A1-Buchstabe (0 -> A, 25 -> Z, 26 -> AA)."""
+    """Convert a 0-based column index to A1 letters (0 -> A, 25 -> Z, 26 -> AA)."""
     if index < 0:
         raise ValueError(f"Column index must not be negative: {index}")
     letters = ""
@@ -47,7 +47,7 @@ def col_letter(index: int) -> str:
 
 
 def col_index(letters: str) -> int:
-    """Umkehrung von col_letter — für Tests und Rückübersetzung."""
+    """Inverse of col_letter — used in tests and reverse lookups."""
     value = 0
     for char in letters.strip().upper():
         if not char.isalpha():
@@ -57,24 +57,24 @@ def col_index(letters: str) -> int:
 
 
 def quote_tab(tab: str) -> str:
-    """Tab-Name für A1-Ranges: 'Mein Blatt' -> 'Mein Blatt' (Apostroph verdoppelt)."""
+    """Quote a tab name for A1 ranges: 'My Sheet' -> \"'My Sheet'\" (apostrophes doubled)."""
     return "'" + str(tab).replace("'", "''") + "'"
 
 
 # --------------------------------------------------------------------------
-# Werte-Normalisierung
+# Value normalization
 # --------------------------------------------------------------------------
 
 def norm_key(value: Any) -> str:
-    """Schlüssel-Vergleich: Groß/Klein und Leerraum egal."""
+    """Normalize a key for case- and whitespace-insensitive comparison."""
     return re.sub(r"\s+", " ", str(value or "")).strip().casefold()
 
 
 def _norm_value(value: Any) -> str:
-    """Wert-Vergleich für die Verifikation.
+    """Normalize a cell value for read-back verification.
 
-    Google formatiert bei USER_ENTERED um: "45" -> 45, "1.50" -> 1.5,
-    Checkbox -> TRUE. Deshalb wird vor dem Vergleich normalisiert.
+    Google reformats values under USER_ENTERED: "45" -> 45, "1.50" -> 1.5,
+    checkbox -> TRUE. Normalize before comparing.
     """
     if value is True:
         return "true"
@@ -82,7 +82,7 @@ def _norm_value(value: Any) -> str:
         return "false"
     text = str(value if value is not None else "").strip()
     if text.startswith("="):
-        return text  # Formel bleibt Formel
+        return text  # formula stays a formula
     try:
         number = float(text.replace(",", "."))
     except ValueError:
@@ -95,7 +95,7 @@ def same_value(left: Any, right: Any) -> bool:
 
 
 def parse_scalar(raw: str) -> Any:
-    """CLI-Wert -> int/float/bool/str. Führende Nullen bleiben Text ('007')."""
+    """Parse a CLI scalar -> int/float/bool/str. Leading zeros stay strings ('007')."""
     text = str(raw).strip()
     if text.lower() in ("true", "wahr"):
         return True
@@ -109,7 +109,7 @@ def parse_scalar(raw: str) -> Any:
 
 
 # --------------------------------------------------------------------------
-# Quelle auflösen
+# Source resolution
 # --------------------------------------------------------------------------
 
 def known_spreadsheets(conn) -> list[dict]:
@@ -117,7 +117,7 @@ def known_spreadsheets(conn) -> list[dict]:
 
 
 def resolve_spreadsheet(conn, hint: str | None = None) -> dict:
-    """Findet das Spreadsheet: per ID, per Namens-Teilstring oder als einziges."""
+    """Resolve the target spreadsheet: by ID, by name substring, or as the sole source."""
     sources = known_spreadsheets(conn)
     if not sources:
         raise SheetError(
@@ -156,7 +156,7 @@ def list_tabs(service, spreadsheet_id: str) -> list[str]:
 
 
 # --------------------------------------------------------------------------
-# Blatt lesen und Zeile finden
+# Read tab and locate row
 # --------------------------------------------------------------------------
 
 def read_tab(service, spreadsheet_id: str, tab: str) -> list[list[str]]:
@@ -174,7 +174,7 @@ def headers_of(rows: list[list[str]]) -> list[str]:
 
 
 def resolve_column(headers: list[str], name: str) -> int:
-    """Spaltenname -> Index. Unbekannt: Fehler mit der Liste der erlaubten Spalten."""
+    """Resolve column name -> 0-based index. Raises with allowed headers if unknown."""
     cleaned = str(name).strip()
     if cleaned in headers:
         index = headers.index(cleaned)
@@ -204,10 +204,10 @@ def resolve_column(headers: list[str], name: str) -> int:
 def find_row(
     rows: list[list[str]], row_key: Any, key_column: str | None = None
 ) -> tuple[int, list[str], list[str], int]:
-    """Sucht die Zeile über den Schlüsselwert.
+    """Locate a row by its key value.
 
-    Rückgabe: (Zeilennummer 1-basiert, Header, Zeilendaten, Key-Spaltenindex).
-    `rows[1:]` beginnt bei Zeile 2 — die einsame Stelle, an der gezählt wird.
+    Returns: (1-based row number, headers, row values, key column index).
+    `rows[1:]` starts at row 2 — the single place where row numbers are computed.
     """
     if not rows:
         raise SheetError("The sheet is empty — there is no header row.")
@@ -240,13 +240,13 @@ def find_row(
 
 
 # --------------------------------------------------------------------------
-# Änderungen planen
+# Plan changes
 # --------------------------------------------------------------------------
 
 def plan_changes(
     headers: list[str], row: list[str], updates: dict[str, Any], row_number: int
 ) -> list[dict]:
-    """Mappt {Spaltenname: neuer Wert} auf konkrete Zellen mit Vorher/Nachher."""
+    """Map {column_name: new_value} to concrete cells with old/new values."""
     if not updates:
         raise SheetError("No changes provided (updates is empty).")
 
@@ -287,7 +287,7 @@ def _batch_update(service, spreadsheet_id: str, tab: str, changes: list[dict],
 
 
 def read_back(service, spreadsheet_id: str, tab: str, cells: list[str]) -> dict[str, str]:
-    """Liest genau die geänderten Zellen zurück — FORMULA, damit Formeln sichtbar bleiben."""
+    """Read back the exact modified cells — using FORMULA render mode so formulas remain visible."""
     if not cells:
         return {}
     ranges = [f"{quote_tab(tab)}!{cell}" for cell in cells]
@@ -303,7 +303,7 @@ def read_back(service, spreadsheet_id: str, tab: str, cells: list[str]) -> dict[
 
 
 # --------------------------------------------------------------------------
-# Öffentliche Operationen
+# Public operations
 # --------------------------------------------------------------------------
 
 def _service(client_secret: str | None = None):
@@ -334,7 +334,7 @@ def update(
     value_input: str = "USER_ENTERED",
     client_secret: str | None = None,
 ) -> dict:
-    """Aktualisiert benannte Spalten genau einer Zeile, dann Re-Index."""
+    """Update named columns of a single row, then re-index."""
     source = resolve_spreadsheet(conn, sheet)
     gdocs.assert_writable(conn, source["id"])
 
@@ -371,16 +371,16 @@ def update(
 
     _batch_update(service, source["id"], tab, changes, value_input)
 
-    # --- Selbstverifikation: geänderte Zellen UND die Schlüsselzelle ---------
-    # Nur die Zielzelle zu prüfen reicht nicht. Wird die Zeile zwischen Lesen und
-    # Schreiben im Browser sortiert oder gelöscht, landet der Wert an der falschen
-    # Zeile — das Rücklesen dieser Koordinate meldet dann trotzdem den geschriebenen
-    # Wert. Die Schlüsselzelle derselben Zeile verrät die Verschiebung.
+    # --- Self-verification: modified cells AND the key cell -----------------
+    # Checking only the target cell is not enough. If the sheet is sorted or a
+    # row is deleted in the browser between read and write, the value lands on
+    # the wrong row — and reading back that coordinate still returns the written
+    # value. Checking the key cell of the same row catches the shift.
     cells = [change["cell"] for change in changes]
     key_cell = f"{col_letter(key_index)}{row_number}"
     try:
         readback = read_back(service, source["id"], tab, cells + [key_cell])
-    except Exception as error:  # Rücklesen darf den Erfolg nicht verschlucken
+    except Exception as error:  # read-back failure must not mask the write result
         readback = {}
         payload["readback_error"] = gdocs._explain(error)
 
@@ -416,7 +416,7 @@ def update(
             + ". Google may reformat values (checkbox -> TRUE, formula -> result)."
         )
 
-    # --- Write-Through: Cache + FTS-Index sofort aktualisieren ---------------
+    # --- Write-through: refresh cache and FTS index immediately -------------
     try:
         gdocs.sync(root, sources=[source], force=True, conn=conn)
         payload["resynced"] = True
@@ -437,7 +437,7 @@ def append(
     value_input: str = "USER_ENTERED",
     client_secret: str | None = None,
 ) -> dict:
-    """Hängt eine neue Zeile an — Spalten über den Header, nie über Positionen."""
+    """Append a new row — mapping columns by header name, never by position."""
     source = resolve_spreadsheet(conn, sheet)
     gdocs.assert_writable(conn, source["id"])
 
@@ -522,6 +522,6 @@ def append(
 
 
 def _row_of(a1_range: str) -> int:
-    """Zeilennummer aus "'Tab'!A13:F13" ziehen."""
+    """Extract the row number from an A1 range like \"'Tab'!A13:F13\"."""
     match = re.search(r"[!:](\d+)", a1_range or "")
     return int(match.group(1)) if match else 0

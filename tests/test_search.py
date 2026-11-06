@@ -65,7 +65,7 @@ def test_links_returns_implements(conn):
 
 
 def _log_project(tmp_path, heading: str, count: int):
-    """Ein Dokument, dessen Abschnitt N Work-Order-Zeilen enthält."""
+    """A document whose section contains N Work Order lines."""
     from atlas import indexer
 
     body = "\n".join(
@@ -95,32 +95,32 @@ def _penalty_for(conn, heading: str) -> float:
 
 
 def test_five_work_orders_are_not_a_logbook(tmp_path):
-    """Der Prototyp-Plan mit fünf Einträgen darf nicht abgewertet werden."""
+    """A prototype plan with five entries must not be penalized."""
     conn = _log_project(tmp_path, "3. Prototyp-Meilenstein-Plan", 5)
 
     assert _penalty_for(conn, "3. Prototyp-Meilenstein-Plan") == 1.0
 
 
 def test_twenty_work_orders_are_a_logbook(tmp_path):
-    """Ab 16 Einträgen ist es ein Logbuch — voller Malus."""
+    """At 16 or more entries it is a logbook — full penalty applies."""
     conn = _log_project(tmp_path, "Nachtrag", 20)
 
     assert _penalty_for(conn, "Nachtrag") == 0.25
 
 
 def test_ten_work_orders_get_half_penalty(tmp_path):
-    """Zwischen 8 und 15 Einträgen: halber Malus, nicht voller."""
+    """Between 8 and 15 entries: half penalty, not full."""
     conn = _log_project(tmp_path, "Nachtrag", 10)
 
     assert _penalty_for(conn, "Nachtrag") == 0.5
 
 
 def test_a_section_named_work_orders_is_still_a_logbook(tmp_path):
-    """Der Rueckfall: "Work Orders" ist der uebliche Name eines Logbuchs.
+    """Regression: "Work Orders" is the typical heading name of a logbook.
 
-    Ein Heading-Hint fuer "work orders" haette die Anzahl-Regel ausgehebelt —
-    dann gewinnt das Logbuch wieder jede Systemfrage, weil der Score-Malus nie
-    greift.
+    A heading boost for "work orders" would override the count rule —
+    letting the logbook win every system query because the score penalty
+    never takes effect.
     """
     conn = _log_project(tmp_path, "Work Orders", 20)
 

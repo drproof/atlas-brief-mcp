@@ -1,8 +1,8 @@
-"""Lokaler Schreibpfad: Work Orders ohne Google-Konto abhaken.
+"""Local write path: check off Work Orders without a Google account.
 
-Der Weg, den `atlas init` beschreibt („Status ist ein Tool-Call, keine
-Textänderung"), endete bisher in „Kein gültiges Google-Token". Diese Tests
-halten den geschlossenen Kreis fest: init -> status -> set_status -> status.
+The workflow described by `atlas init` ("status is a tool call, not a text
+edit") previously ended in "No valid Google token". These tests lock in the
+closed loop: init -> status -> set_status -> status.
 """
 
 from __future__ import annotations
@@ -34,8 +34,8 @@ def test_local_set_status_closes_the_loop(tmp_path):
 
     assert payload["verified"] is True
     assert payload["source"] == "local"
-    # Die Statuszeile selbst prüfen, nicht das ganze Dokument: der
-    # Erklärtext darunter nennt "⬜ OPEN" als Formatbeispiel.
+    # Check the status line itself, not the whole document: the explanatory
+    # text below mentions "⬜ OPEN" as a format example.
     found = localwrite.find_line(root, 1)
     assert found is not None
     assert "✅ DONE" in found[2].group(0)
@@ -43,7 +43,7 @@ def test_local_set_status_closes_the_loop(tmp_path):
 
 
 def test_local_set_status_survives_index_rebuild(tmp_path):
-    """Nach dem Write muss `status` den neuen Stand lesen — aus der Datei."""
+    """After writing, `status` must read the updated state from disk."""
     root, conn = _project(tmp_path)
     publish_mod.set_status(root, conn, 1, "done")
 
@@ -59,14 +59,14 @@ def test_local_set_status_is_idempotent(tmp_path):
 
     second = publish_mod.set_status(root, conn, 1, "done")
 
-    # Der Index ist aktuell, also antwortet schon der Vorab-Check — ohne
-    # zweiten Schreibvorgang auf die Datei.
+    # The index is up to date, so the pre-check answers immediately without
+    # a second write to the file.
     assert second.get("changed") is False
     assert second.get("written") is not True
 
 
 def test_local_set_status_keeps_the_title(tmp_path):
-    """Nur der Marker wandert, der Titel bleibt."""
+    """Only the status marker changes; the title remains intact."""
     root, conn = _project(tmp_path)
     before = (root / "docs" / "ARCHITECTURE.md").read_text(encoding="utf-8")
 
@@ -123,7 +123,7 @@ def test_local_set_status_carries_changed_and_verify_gate(tmp_path):
 
 
 def test_legacy_german_marker_is_still_swappable(tmp_path):
-    """Bestehende Dokumente haben `⬜ OFFEN` — der Wechsel muss sie erkennen."""
+    """Existing documents use `⬜ OFFEN` — status switching must recognize it."""
     root, conn = _project(tmp_path)
     doc = root / "docs" / "ARCHITECTURE.md"
     doc.write_text(
@@ -142,7 +142,7 @@ def test_legacy_german_marker_is_still_swappable(tmp_path):
 
 
 def test_legacy_marker_survives_status_back_and_forth(tmp_path):
-    """OFFEN -> DONE -> OPEN, ohne den Titel zu verlieren."""
+    """OFFEN -> DONE -> OPEN without losing the title."""
     root, conn = _project(tmp_path)
 
     localwrite.set_status(root, conn, 1, "done")

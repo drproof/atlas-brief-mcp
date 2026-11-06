@@ -1,18 +1,18 @@
-"""`atlas measure`: was kostet eine Frage mit und ohne Index?
+"""`atlas measure`: what does a question cost with and without the index?
 
-Die Zahlen in der README stammen aus einer einmaligen Feldmessung und sind für
-einen Fremden nicht nachprüfbar. Dieses Modul misst dasselbe auf **dem eigenen
-Projekt** des Nutzers: pro Frage der Weg "alles lesen" gegen "where + read".
+The numbers in the README come from a one-off field benchmark and cannot be
+verified by a stranger on faith. This module runs the same measurement on **the
+user's own project**: per question, "read everything" vs. "where + read".
 
-Ehrlichkeitsregeln, die der Code einhält:
+Honesty rules enforced by the code:
 
-* Die naive Baseline ist das **ganze** Doku-Set, nicht ein einzelner Abschnitt.
-  Ein Agent ohne Index kennt die Fundstelle nicht und muss alles lesen.
-* Findet `where` nichts, ist das ein Fehlschlag und keine Ersparnis. Solche
-  Fragen werden als `missed` gezählt und aus der Ersparnis herausgerechnet.
-* Automatisch erzeugte Fragen enthalten die Überschrift und damit einen Teil
-  der Antwort. Der Bericht sagt das, statt die Zahl als unabhängige Messung
-  auszugeben.
+* The naive baseline is the **entire** doc set, not a single section. An agent
+  without an index does not know where the answer lives and must read it all.
+* If `where` finds nothing, that is a miss, not a saving. Such questions are
+  counted as `missed` and excluded from the savings calculation.
+* Auto-generated questions include the section heading and therefore part of
+  the answer. The report states this caveat instead of presenting the number
+  as an independent benchmark.
 """
 
 from __future__ import annotations
@@ -30,7 +30,7 @@ def _tokens(text: str) -> int:
 
 
 def document_tokens(conn: sqlite3.Connection) -> tuple[int, int]:
-    """(Tokens aller Dokumente, Anzahl Dokumente) — die naive Baseline."""
+    """Return (total tokens across all documents, document count) — the naive baseline."""
     row = conn.execute(
         "SELECT COALESCE(SUM(LENGTH(body)), 0), COUNT(DISTINCT doc_id) FROM sections"
     ).fetchone()
@@ -38,10 +38,10 @@ def document_tokens(conn: sqlite3.Connection) -> tuple[int, int]:
 
 
 def auto_questions(conn: sqlite3.Connection, limit: int = 8) -> list[str]:
-    """Fragen aus den größten Abschnitten — als Selbsttest des Index.
+    """Generate questions from the largest sections — as a self-test of the index.
 
-    Bewusst die längsten Abschnitte: dort steht die meiste Information, also
-    dort tut ein Volltext-Read am meisten weh.
+    Deliberately picks the longest sections: they hold the most information,
+    which is where a full-text read hurts the most.
     """
     rows = conn.execute(
         "SELECT heading FROM sections "
@@ -61,7 +61,7 @@ def auto_questions(conn: sqlite3.Connection, limit: int = 8) -> list[str]:
 
 
 def measure(root, conn, questions: list[str] | None = None, sample: int = 8) -> dict:
-    """Misst für jede Frage den naiven gegen den indizierten Weg."""
+    """Compare the naive full-read path against the indexed path for each question."""
     baseline, docs = document_tokens(conn)
     generated = questions is None
     queries = (questions or auto_questions(conn, limit=sample)) or []
@@ -115,7 +115,7 @@ def measure(root, conn, questions: list[str] | None = None, sample: int = 8) -> 
 
 
 def render(payload: dict, limit: int = 12) -> str:
-    """Kompakte Tabelle für das Terminal."""
+    """Render a compact summary table for the terminal."""
     lines = [
         f"Documents: {payload['documents']} · naive baseline: {payload['baseline_tokens']:,} tokens per question",
         "",

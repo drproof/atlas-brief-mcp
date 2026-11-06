@@ -1,4 +1,4 @@
-"""Root-Auflösung und Datei-Discovery."""
+"""Project root resolution and file discovery."""
 
 from __future__ import annotations
 
@@ -6,16 +6,16 @@ import os
 from pathlib import Path
 
 CACHE_DIR = ".atlas"
-# Projekte, die vor der Umbenennung angelegt wurden, haben `.gdd/`. Sie werden
-# weiter erkannt — ein Werkzeug, das beim Umbenennen die Indizes seiner Nutzer
-# verliert, ist kein Werkzeug, sondern ein Umzug.
+# Projects created before the rename use `.gdd/`. Continue recognizing them —
+# a tool that loses its users' indexes on a rename is a migration headache,
+# not a tool.
 LEGACY_CACHE_DIR = ".gdd"
 DOC_DIRS = ("docs", "specs", "atlas", "gdd")
 DEFAULT_EXCLUDES = ("_legacy_archive", "_archive", "node_modules", ".git", ".godot", ".venv", "art_source")
 
 
 def cache_dir(root: Path) -> Path:
-    """Der Konfigurationsordner: `.atlas/`, sonst das alte `.gdd/`, sonst der neue Pfad."""
+    """Return the config directory: `.atlas/`, else legacy `.gdd/`, else the new path."""
     primary = root / CACHE_DIR
     if primary.is_dir():
         return primary
@@ -28,21 +28,21 @@ def cache_dir(root: Path) -> Path:
 def _home() -> Path:
     try:
         return Path.home().resolve()
-    except RuntimeError:  # kein Home ermittelbar (exotische Umgebungen)
+    except RuntimeError:  # home directory cannot be determined (exotic environments)
         return Path("/")
 
 
 def find_root(explicit: str | None = None) -> Path:
-    """Bestimmt das Projekt-Root.
+    """Determine the project root.
 
-    Reihenfolge: expliziter Pfad > ATLAS_ROOT/GDD_ROOT > Aufwärtssuche nach
-    .atlas/ bzw. .gdd/ > docs/specs > cwd.
+    Order: explicit path > ATLAS_ROOT/GDD_ROOT > upward search for
+    .atlas/ or .gdd/ > docs/specs > cwd.
 
-    **Das Home-Verzeichnis ist nie ein Projekt.** Dort liegt der globale
-    Konfig-Ordner `~/.atlas` (bzw. `~/.gdd` mit Token und Client-Secret) — wer
-    ihn als Marker akzeptiert, erklärt `C:\\Users\\<name>` zum Projekt und
-    scannt bei `atlas init` das gesamte Benutzerverzeichnis. Die Suche endet
-    deshalb am Home, nicht erst an der Laufwerkswurzel.
+    **The home directory is never a project.** That is where the global config
+    folder `~/.atlas` (or `~/.gdd` with token and client secret) lives — accepting
+    it as a marker turns `C:\\Users\\<name>` into a project and scans the entire
+    user directory on `atlas init`. The upward search therefore stops at home,
+    not at the filesystem root.
     """
     if explicit:
         return Path(explicit).expanduser().resolve()
@@ -54,7 +54,7 @@ def find_root(explicit: str | None = None) -> Path:
     home = _home()
     for candidate in (cwd, *cwd.parents):
         if candidate == home:
-            break  # oberhalb des Homes gibt es kein Projekt
+            break  # no project exists above the home directory
         if (candidate / CACHE_DIR).is_dir() or (candidate / LEGACY_CACHE_DIR).is_dir():
             return candidate
         if (candidate / "gdd").is_dir():
@@ -69,10 +69,10 @@ def index_path(root: Path) -> Path:
 
 
 def doc_dirs(root: Path) -> list[Path]:
-    """Doku-Ordner: docs/, specs/, atlas/, gdd/ — plus der Sync-Cache.
+    """Return documentation directories: docs/, specs/, atlas/, gdd/ — plus the sync cache.
 
-    Der Cache liegt unter `.atlas/cache` (oder `.gdd/cache` bei Altzprojekten)
-    und wird nur gelesen, nie geschrieben.
+    The cache lives under `.atlas/cache` (or `.gdd/cache` in legacy projects)
+    and is only read, never written to directly.
     """
     found = [root / d for d in DOC_DIRS if (root / d).is_dir()]
     cache = cache_dir(root) / "cache"
@@ -82,7 +82,7 @@ def doc_dirs(root: Path) -> list[Path]:
 
 
 def discover(root: Path, excludes: tuple[str, ...] = DEFAULT_EXCLUDES) -> list[Path]:
-    """Alle Markdown-Dateien in den Doku-Ordnern, ohne Ausschlussmuster."""
+    """Return all Markdown files in the documentation directories, excluding ignored patterns."""
     files: list[Path] = []
     for base in doc_dirs(root):
         for dirpath, dirnames, filenames in os.walk(base):

@@ -1,4 +1,4 @@
-"""Schema-Migration und Task-Lebenszyklus."""
+"""Schema migration and task lifecycle."""
 
 from __future__ import annotations
 
@@ -15,10 +15,10 @@ def _project(tmp_path, name: str, text: str):
 
 
 def test_schema_version_mismatch_rebuilds_cache(tmp_path):
-    """Ein alter Index darf nach einer Schema-Aenderung nicht scheitern."""
+    """An outdated index must not fail after a schema change."""
     path = tmp_path / "index.sqlite"
     conn = indexer.connect(path)
-    # Stand von Version 1 simulieren: tasks ohne path-Spalte
+    # Simulate version 1 state: tasks table without the path column
     conn.executescript(
         """
         CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT);
@@ -38,12 +38,12 @@ def test_schema_version_mismatch_rebuilds_cache(tmp_path):
     assert version == indexer.SCHEMA_VERSION
     columns = {row[1] for row in conn.execute("PRAGMA table_info(tasks)")}
     assert "path" in columns, "tasks braucht die neue Spalte"
-    # Cache ist geleert, Markdown bleibt die Wahrheit
+    # Cache is cleared; Markdown remains the source of truth
     assert conn.execute("SELECT COUNT(*) FROM docs").fetchone()[0] == 0
 
 
 def test_deleted_file_leaves_no_ghost_tasks(tmp_path):
-    """Beim Loeschen einer Datei verschwinden auch ihre Tasks."""
+    """Deleting a file also removes its tasks."""
     root = _project(tmp_path, "01.md", "# Plan\n\n## Aufgaben\n\n- [ ] Erster Punkt\n")
     conn = indexer.open_index(root)
     indexer.refresh(conn, root, force=True)
@@ -57,7 +57,7 @@ def test_deleted_file_leaves_no_ghost_tasks(tmp_path):
 
 
 def test_changed_frontmatter_id_clears_old_tasks(tmp_path):
-    """Aendert sich die `id:`, darf der alte Task nicht stehenbleiben."""
+    """When frontmatter `id:` changes, the old task must not remain."""
     root = _project(tmp_path, "01.md",
                     "---\nid: erster\n---\n\n# Plan\n\n## Aufgaben\n\n- [ ] Punkt\n")
     conn = indexer.open_index(root)

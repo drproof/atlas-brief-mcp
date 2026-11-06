@@ -1,4 +1,4 @@
-"""Symbolsuche im Code: Signatur statt 125k-Token-Datei."""
+"""Code symbol search: signature instead of a 125k-token file."""
 
 from __future__ import annotations
 
@@ -67,12 +67,12 @@ def test_render_is_compact(tmp_path):
     text = code.render(root, "has_perk")
     assert "scripts/unit.gd:6" in text
     assert "static func has_perk(perk_id: String) -> bool" in text
-    # Die Antwort ist eine Zeile pro Treffer, nicht der Dateiinhalt.
+    # Response is one line per hit, not the full file content.
     assert len(text) < 600
 
 
 # --------------------------------------------------------------------------
-# Definition vs. Aufruf — der Fall, der bei WO 8 gefehlt hat
+# Definition vs. call site — the check that was missing in WO 8
 # --------------------------------------------------------------------------
 
 def test_usages_exclude_the_definition_itself(tmp_path):
@@ -98,7 +98,7 @@ def test_render_warns_about_dead_function(tmp_path):
     assert "1 definition(s)" in text
     assert "NEVER called" in text
     assert "dead code" in text
-    # Die Anbindungszeile steht jetzt immer da, nicht nur auf Wunsch.
+    # The wiring summary line is always included, not only on request.
     assert "0 call(s), 0 reference(s)" in text
 
 
@@ -117,7 +117,7 @@ def test_render_shows_call_sites(tmp_path):
 
 
 def test_scene_connection_counts_as_usage(tmp_path):
-    """`.tscn`-Signale sind die halbe Anbindung in Godot — und standen nie im Scan."""
+    """`.tscn` signals are half the wiring in Godot — and were previously missed by scans."""
     root = _project(tmp_path)
     scenes = root / "scenes"
     scenes.mkdir()
@@ -140,7 +140,7 @@ def test_scene_connection_counts_as_usage(tmp_path):
 
 
 def test_callable_without_parens_counts_as_reference(tmp_path):
-    """`pressed.connect(handler)` und `call("handler")` haben keine Klammer am Namen."""
+    """`pressed.connect(handler)` and `call("handler")` have no parentheses after the name."""
     root = _project(tmp_path)
     (root / "scripts" / "turn_manager.gd").write_text(
         "func _ready() -> void:\n"
@@ -169,7 +169,7 @@ def test_definition_and_comment_are_not_usage(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# Sprach-Paritaet: dieselben Muster wie `atlas init`
+# Language parity: same patterns as `atlas init`
 # --------------------------------------------------------------------------
 
 def test_finds_python_function(tmp_path):
@@ -207,7 +207,7 @@ def test_finds_typescript_arrow_function(tmp_path):
 
 
 def test_python_definition_is_not_counted_as_reference(tmp_path):
-    """Die `def`-Zeile ist keine Benutzung — sonst besteht jedes Symbol das Gate."""
+    """The `def` line is not a usage — otherwise every symbol would pass the gate."""
     root = tmp_path / "py"
     (root / "mod").mkdir(parents=True)
     (root / "mod" / "lonely.py").write_text(

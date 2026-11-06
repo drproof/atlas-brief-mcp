@@ -41,10 +41,10 @@ def _doc():
 
 
 def test_insert_point_is_end_of_section():
-    # Der Index zeigt auf den Umbruch, der den Abschnitt beendet — nicht
-    # dahinter. Eingefügt wird dort mit führendem "\n", damit die neue Zeile
-    # ein eigener Absatz wird und vom Vorabsatz erbt (nicht von der folgenden
-    # Überschrift, sonst würde sie zur HEADING_2).
+    # The index points to the newline that terminates the section — not after it.
+    # Text is inserted there with a leading "\n" so the new line becomes its own
+    # paragraph and inherits the style of the preceding paragraph (not the
+    # following heading, which would turn it into HEADING_2).
     index, heading = find_insert_index(_doc()["body"], "Prototyp-Meilenstein-Plan")
     assert index == 149
     assert "Prototyp" in heading
@@ -69,7 +69,7 @@ def test_missing_section_returns_none():
 
 
 # --------------------------------------------------------------------------
-# set_status: Tab-Sperre (tabsCriteria)
+# set_status: tab locking (tabsCriteria)
 # --------------------------------------------------------------------------
 
 import json
@@ -89,12 +89,12 @@ class _Request:
 
 
 class FakeDocs:
-    """Zwei Tabs mit identischem Status-String — genau der Fall für tabsCriteria."""
+    """Two tabs with identical status strings — the exact case for tabsCriteria."""
 
     def __init__(self, flat: bool = False):
         self.flat = flat
-        # Flaches Dokument ohne Tabs: der Text muss sich beim Write ändern,
-        # sonst simuliert der Fake eine API, die Writes verschluckt.
+        # Flat document without tabs: text must change on write, otherwise the
+        # fake would simulate an API that silently swallows writes.
         self.flat_text = "Work Order 9 — ✅ DONE (flach)\n"
         self.tabs = [
             {"id": "t.1", "title": "Tab 5 Kampagne",
@@ -175,7 +175,7 @@ def test_set_status_locks_replacement_to_one_tab(monkeypatch, wired, tmp_path):
     assert result["tab_locked"] is True
     assert result["tab"] == "Tab 5 Kampagne"
     assert result["verified"] is True
-    # nur der Ziel-Tab wurde angefasst, das Archiv blieb unberührt
+    # Only the target tab was modified; the archive remained untouched
     assert "⬜ OPEN" in wired.tabs[0]["text"]
     assert "✅ DONE" in wired.tabs[1]["text"]
     assert wired.calls == [["t.1"]]
@@ -200,25 +200,25 @@ def test_set_status_falls_back_without_tab_lock(monkeypatch, tmp_path):
     result = publish.set_status(tmp_path, None, 9, status="open")
 
     assert result["changed"] is True
-    assert result["tab_locked"] is False     # Dokument ohne Tabs
+    assert result["tab_locked"] is False     # Document without tabs
     assert result["verified"] is True
 
 
 def test_set_status_swaps_whole_marker_pair():
-    """'✅ DONE' -> '⬜ OPEN': der Text muss mitwechseln, nicht nur das Emoji."""
+    """'✅ DONE' -> '⬜ OPEN': the label text must switch along with the emoji."""
     assert publish.format_line(9, "open", "", "") == "Work Order 9 — ⬜ OPEN:"
     assert publish.format_line(9, "done", "", "") == "Work Order 9 — ✅ DONE:"
 
 
 def test_newline_prefix_starts_a_new_paragraph():
-    """Regression zu `line + "\n"` am Absatzende.
+    """Regression test for `line + "\n"` at the end of a paragraph.
 
-    Simuliert die Docs-Insert-Semantik: Einfügen an der Position des
-    abschließenden Umbruchs. Ohne führenden Umbruch klebt die Work Order am
-    letzten Wort ("…AbschnittsWork Order 7 — ✅").
+    Simulates Google Docs insert semantics: inserting at the index of the
+    trailing newline. Without a leading newline, the Work Order sticks to the
+    last word ("…AbschnittsWork Order 7 — ✅").
     """
     text = "Text des Abschnitts\nNächster Abschnitt\n"
-    index = len("Text des Abschnitts")  # Position des Umbruchs
+    index = len("Text des Abschnitts")  # Position of the newline
     line = "Work Order 7 — ✅ DONE (Test)"
 
     fixed = text[:index] + "\n" + line + text[index:]
@@ -229,7 +229,7 @@ def test_newline_prefix_starts_a_new_paragraph():
 
 
 def test_insert_request_has_leading_newline():
-    """Der Request selbst: führender Umbruch, Tab-Sperre, kein Ankleben."""
+    """The request itself: leading newline, tab lock, no text sticking."""
     body = _insert_request(14237, "Work Order 7 — ✅ DONE (Test)")
 
     request = body["requests"][0]["insertText"]
@@ -239,14 +239,14 @@ def test_insert_request_has_leading_newline():
 
 
 def test_insert_request_carries_tab_id():
-    """Bei einem Tab-Dokument muss die Location den Tab nennen."""
+    """For a tabbed document, the insert location must specify the tab ID."""
     body = _insert_request(500, "Work Order 8 — ⬜ OPEN (Test)", tab_id="t.5zmrz")
 
     assert body["requests"][0]["insertText"]["location"]["tabId"] == "t.5zmrz"
 
 
 def test_publish_live_doc_guard_switches_status_when_index_lags(monkeypatch, tmp_path):
-    """Index kennt WO 9 noch nicht (`extract_work_orders == []`), aber das Live-Doc hat sie."""
+    """Index does not know WO 9 yet (`extract_work_orders == []`), but the live doc has it."""
     fake = FakeDocs()
     fake.tabs[0]["text"] = "Work Order 9 — ⬜ OPEN (Headless-Tests)\n"
     monkeypatch.setattr(gdocs, "build_services", lambda creds: (None, None, fake))

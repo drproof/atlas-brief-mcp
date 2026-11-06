@@ -1,11 +1,11 @@
-"""Append-only Protokoll aller Schreibzugriffe auf die Quelle.
+"""Append-only log of all write operations against the source.
 
-Der Agent bekommt sein `verified: true` im Tool-Output — der Mensch will später
-wissen, was über den Tag verteilt in den Google-Dokumenten passiert ist, ohne
-sich durch die Google-Versionshistorie zu klicken.
+The agent gets its `verified: true` in the tool output — the human wants to know
+later what happened in the Google documents over the course of the day without
+clicking through Google's version history.
 
-Bewusst eine simple JSON-Zeile pro Vorgang: lesbar mit `grep`, `jq` oder
-`atlas log`, und niemals von der Anwendung selbst verändert.
+Deliberately a simple JSON line per operation: readable with `grep`, `jq`, or
+`atlas log`, and never modified by the application itself.
 """
 
 from __future__ import annotations
@@ -25,7 +25,7 @@ def log_path(root) -> Path:
 
 
 def log(root, tool: str, **fields) -> Path:
-    """Hängt einen Vorgang an. Darf den Schreibvorgang nie scheitern lassen."""
+    """Append an operation entry. Must never cause the write operation to fail."""
     path = log_path(root)
     entry = {
         "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -43,7 +43,7 @@ def log(root, tool: str, **fields) -> Path:
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(entry, ensure_ascii=False, default=str) + "\n")
     except OSError:
-        pass  # ein fehlendes Protokoll darf keinen Write verhindern
+        pass  # a missing log must never block a write
     return path
 
 
@@ -78,8 +78,8 @@ def render(root, limit: int = 20) -> str:
         verdict = "ok" if entry.get("verified") else "NOT VERIFIED"
         target = (
             entry.get("sheet")
-            # `publish` schreibt `document`, nicht `document_name` — sonst
-            # zeigt `atlas log` bei Work-Order-Writes nie den Dokumentnamen.
+            # `publish` writes `document`, not `document_name` — otherwise
+            # `atlas log` never shows the document name for work order writes.
             or entry.get("document_name")
             or entry.get("document")
             or ""

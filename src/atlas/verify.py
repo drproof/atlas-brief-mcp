@@ -1,18 +1,18 @@
-"""Anbindungs-Nachweis: existiert ein Symbol *und* wird es benutzt?
+"""Wiring verification: does a symbol exist *and* is it actually used?
 
-Hintergrund (WO 8): 1.070 Zeilen implementiert, der Aufrufer fehlte, der nächste
-Compiler-Hotfix sah „unused function" und löschte alles. Ein Status `✅` im Doc
-war zu diesem Zeitpunkt wahr — und trotzdem war das Feature tot.
+Background (WO 8): 1,070 lines implemented, the caller was forgotten, and the
+next compiler hotfix saw "unused function" and deleted it all. A `✅` status in
+the doc was true at the time — and yet the feature was dead.
 
-Zwei Fragen, zwei Antworten, ein Urteil:
+Two questions, two answers, one verdict:
 
-    definiert?   nein → das Symbol gibt es nicht (Tippfehler oder weg)
-    benutzt?     nein → toter Code, Abnahme verweigern
-    beides ja    → angebunden
+    defined?     no  → symbol does not exist (typo or removed)
+    used?        no  → dead code, refuse acceptance
+    both yes         → wired
 
-Die Zuordnung Work Order → Symbole steht in `.atlas/wo-symbols.yml` (im Projekt,
-nicht im Tool). Sie ist der einzige Weg, eine erledigte WO später zu überwachen:
-Ohne hinterlegte Symbole kann niemand merken, dass ein Hotfix sie gekappt hat.
+The Work Order → symbols mapping lives in `.atlas/wo-symbols.yml` (in the
+project, not the tool). It is the only way to monitor a completed WO later:
+without recorded symbols, nobody notices when a hotfix severs the caller.
 """
 
 from __future__ import annotations
@@ -31,7 +31,7 @@ def symbols_path(root) -> Path:
 
 
 def load_wo_symbols(root) -> dict[int, list[str]]:
-    """`{8: ['_dispatch_unit_class_skill'], 12: [...]}` — fehlende Datei = leer."""
+    """Return `{8: ['_dispatch_unit_class_skill'], 12: [...]}` — missing file = empty dict."""
     path = symbols_path(root)
     if not path.exists():
         return {}
@@ -58,16 +58,16 @@ def load_wo_symbols(root) -> dict[int, list[str]]:
 
 
 def check(root, symbols: list[str]) -> dict:
-    """Prüft jedes Symbol auf Definition und Anbindung. Ohne Netz, ohne Index."""
+    """Check each symbol for definition and wiring. No network, no index."""
     report = []
     for raw in symbols:
         symbol = str(raw).strip()
         if not symbol:
             continue
-        # exact=True: sonst frisst `limit` die Substring-Treffer und die echte
-        # Definition liegt hinter dem Abbruch (can_vault_a/b/c vor `func vault()`).
+        # exact=True: otherwise `limit` is consumed by substring matches and the
+        # real definition falls past the cutoff (can_vault_a/b/c before `func vault()`).
         definitions = code.find(root, symbol, limit=3, exact=True)
-        # Exakter Treffer, nicht Substring: `vault` soll nicht `can_vault` bestätigen.
+        # Exact match, not substring: `vault` must not be satisfied by `can_vault`.
         exact = [d for d in definitions if d["symbol"] == symbol]
         usage = code.references(root, symbol, limit=3)
         bound = usage["call_count"] + usage["ref_count"]
@@ -102,7 +102,7 @@ def _verdict(entry: dict) -> str:
 
 
 def refusal(result: dict) -> str:
-    """Klartext für die verweigerte Abnahme — mit Beleg, nicht mit Vorwurf."""
+    """Format a plain-text refusal message — with evidence, not blame."""
     lines = ["Acceptance refused — wiring check failed:"]
     for entry in result["failed"]:
         lines.append(f"  ✗ {_verdict(entry)}")
@@ -127,11 +127,11 @@ def summary(result: dict) -> str:
 
 
 def regressions(root, work_orders: list[dict]) -> list[dict]:
-    """Prüft die Symbole **erledigter** Work Orders gegen den aktuellen Code.
+    """Check the symbols of **completed** work orders against the current codebase.
 
-    `work_orders` kommt aus `status.status()` — `[{wo, status, title}, …]`.
-    Nicht hinterlegte WOs werden übersprungen, offene nie geprüft: Eine offene
-    WO darf unfertig sein, eine erledigte nicht kaputt.
+    `work_orders` comes from `status.status()` — `[{wo, status, title}, …]`.
+    WOs without recorded symbols are skipped, and open WOs are never checked:
+    an open WO is allowed to be unfinished, a completed one is not allowed to be broken.
     """
     mapping = load_wo_symbols(root)
     done = {item["wo"]: item for item in work_orders

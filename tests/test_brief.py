@@ -1,4 +1,4 @@
-"""Tests für den Task-Brief: Regelquelle, Kürzung, Abschluss-Block."""
+"""Tests for task brief generation: rules source, truncation, and closing block."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ def test_trim_rules_cuts_at_first_numbered_section():
 
 
 def test_trim_rules_keeps_flat_file_intact():
-    """Ohne Abschnitt 0 gibt es keinen GDD-Teil — dann nicht alles wegschneiden."""
+    """Without section 0 there is no GDD part — do not strip everything."""
     text = "# Regeln\n\n## 1. Timeouts\n- 90 Sekunden\n"
     trimmed = brief._trim_rules(text)
     assert "90 Sekunden" in trimmed

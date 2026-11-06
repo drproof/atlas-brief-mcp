@@ -1,4 +1,4 @@
-"""Kommandozeile: gleiche Logik wie der MCP-Server, ohne Client."""
+"""Command-line interface: same logic as the MCP server, without a client."""
 
 from __future__ import annotations
 
@@ -80,7 +80,7 @@ def _emit(payload: str, as_json: bool) -> None:
 
 
 def _symbols(raw: str) -> list[str] | None:
-    """'a, b' -> ['a', 'b'] — None, wenn nichts angegeben wurde."""
+    """'a, b' -> ['a', 'b'] — None when nothing was provided."""
     items = [part.strip() for part in (raw or "").split(",") if part.strip()]
     return items or None
 
@@ -99,9 +99,9 @@ def _pairs(raw: list[str]) -> dict:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    # --root/--json gelten global UND nach dem Subcommand ('atlas serve --root X'
-    # ist die natürlichste Aufrufweise für MCP-Clients). SUPPRESS verhindert,
-    # dass der Subparser den global gesetzten Wert mit None überschreibt.
+    # --root/--json apply both globally AND after the subcommand ('atlas serve --root X'
+    # is the most natural invocation for MCP clients). SUPPRESS prevents the
+    # subparser from overwriting the globally set value with None.
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--root", default=argparse.SUPPRESS,
                         help="project root (default: ATLAS_ROOT or upward search)")
@@ -237,8 +237,8 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     import warnings
 
-    # Der Google-Client warnt beim Import über das Python-EOL. Das gehört nicht
-    # in die Tool-Ausgabe eines Agenten.
+    # The Google client warns about Python EOL on import. That does not belong
+    # in an agent's tool output.
     warnings.filterwarnings("ignore", category=FutureWarning)
 
     for stream in (sys.stdout, sys.stderr):
@@ -251,7 +251,7 @@ def main(argv: list[str] | None = None) -> int:
     root = find_root(getattr(args, "root", None))
     as_json = bool(getattr(args, "json", False))
 
-    # Projekt-Synonyme für die Suche (.atlas/aliases.yml), mtime-geprüft.
+    # Project synonyms for search (.atlas/aliases.yml), mtime-checked.
     from . import normalize
 
     normalize.load_aliases(cache_dir(root) / "aliases.yml")
@@ -426,10 +426,10 @@ def main(argv: list[str] | None = None) -> int:
 
     conn = open_index(root)
 
-    # Vor jedem lesenden Befehl den Google-Stand nachziehen (5-Minuten-Cache).
-    # `where`/`search`/`read`/`outline`/`links` fehlten hier — eine Änderung im
-    # Doc war dort erst nach einem expliziten `atlas sync` sichtbar, obwohl das
-    # MCP-Pendant (`_fresh`) es immer tut.
+    # Pull the latest Google state before any read command (5-minute cache).
+    # `where`/`search`/`read`/`outline`/`links` used to be missing here — a change
+    # in the doc was only visible after an explicit `atlas sync`, even though the
+    # MCP counterpart (`_fresh`) always runs it.
     if args.command in ("status", "brief", "lint", "where", "search", "read",
                         "outline", "links", "tasks", "publish", "set-status"):
         from . import gdocs
@@ -444,13 +444,13 @@ def main(argv: list[str] | None = None) -> int:
         report = bootstrap.init_project(root, out=args.out, force=args.force,
                                         dry_run=args.dry_run)
         if args.dry_run:
-            # Nichts geschrieben, also nichts zu indizieren oder zu linten.
+            # Nothing written, so nothing to index or lint.
             print(json.dumps(report, ensure_ascii=False, indent=2))
             return 0
 
         indexed = refresh(conn, root, force=True)
-        # Nach dem Schreiben von managed.json mit Scope linten: sonst bricht
-        # `init` in jedem Repo mit Alt-Doku an fremden Formbefunden ab.
+        # Lint with scope after writing managed.json: otherwise `init` fails
+        # on unrelated legacy doc issues in any repo with existing docs.
         lint_result = json.loads(lint_mod.lint(conn, managed=bootstrap.load_managed(root)))
         report["indexed"] = indexed.get("sections", indexed)
         report["lint"] = {
@@ -459,7 +459,7 @@ def main(argv: list[str] | None = None) -> int:
             "discovered": lint_result.get("discovered_issues", 0),
         }
         print(json.dumps(report, ensure_ascii=False, indent=2))
-        # 0 nur, wenn die atlas-eigenen Dokumente sauber sind.
+        # Return 0 only when atlas-managed documents are clean.
         return 0 if lint_result.get("ok") else 1
     elif args.command == "where":
         _emit(search_mod.where(conn, args.topic), as_json)
@@ -499,8 +499,8 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "lint":
         from . import bootstrap, lint as lint_mod
 
-        # Ohne managed.json ist alles verwaltet (Altprojekte, Google Docs) —
-        # mit managed.json entscheidet nur atlas-eigene Doku über den Exit-Code.
+        # Without managed.json everything is managed (legacy projects, Google Docs) —
+        # with managed.json only atlas-managed docs determine the exit code.
         managed = bootstrap.load_managed(root)
         raw = lint_mod.lint(conn, managed=managed)
         data = json.loads(raw)
@@ -553,21 +553,21 @@ def main(argv: list[str] | None = None) -> int:
 
         payload = stats(conn)
         payload["active_root"] = str(root)
-        # Regressions-Wächter: Symbole erledigter Work Orders gegen den Code.
-        # Was hier auftaucht, ist ein ✅, das die Gegenwart nicht mehr deckt.
+        # Regression guard: check symbols of completed work orders against the code.
+        # Anything listed here is a ✅ that no longer matches current reality.
         try:
             items = json.loads(status_mod.status(conn))["work_orders"]
             mapping = verify.load_wo_symbols(root)
             payload["attachment_regressions"] = verify.regressions(root, items)
             payload["wo_symbols"] = mapping
-            # Erledigte WOs ohne hinterlegte Symbole sind nicht überwacht —
-            # eine Regression dort bliebe unbemerkt. Sichtbar machen, nicht ahnden.
+            # Completed WOs without recorded symbols are unmonitored —
+            # a regression there would go unnoticed. Surface them without failing.
             payload["work_orders_without_symbols"] = [
                 item["wo"] for item in items
                 if str(item.get("status", "")).lower() in {"done", "erledigt"}
                 and item["wo"] not in mapping
             ]
-        except Exception as error:  # Index leer/None — Diagnose darf nie abstürzen
+        except Exception as error:  # empty/None index — diagnostics must never crash
             payload["attachment_regressions"] = []
             payload["verify_error"] = str(error)
         _emit(json.dumps(payload, ensure_ascii=False), as_json)

@@ -360,6 +360,8 @@ def publish(
             root, conn, int(wo), format_line(wo, status, title, description),
             section, dry_run=dry_run,
         )
+        if not dry_run and result.get("verified") and status.lower() in {"done", "erledigt"}:
+            verify.record_wo_symbols(root, int(wo), verify_symbols)
         return {**result, **gate}
 
     creds = gdocs.load_credentials(interactive=False, client_secret=client_secret,
@@ -498,6 +500,8 @@ def publish(
     audit.log(root, "publish", wo=wo, status=status, title=title,
               document=source["name"], tab=tab_title, index=insert_index,
               verified=verified, modified=meta.get("modifiedTime", ""))
+    if verified and status.lower() in {"done", "erledigt"}:
+        verify.record_wo_symbols(root, int(wo), verify_symbols)
     return payload
 
 
@@ -589,6 +593,8 @@ def set_status(
             return {"changed": False, "wo": int(wo), "status": status,
                     "reason": "Status is already set", **gate}
         result = localwrite.set_status(root, conn, int(wo), status, dry_run=dry_run)
+        if not dry_run and result.get("verified") and status.lower() in {"done", "erledigt"}:
+            verify.record_wo_symbols(root, int(wo), verify_symbols)
         return {**result, **gate}
 
     old_marks: list[str] = []
@@ -714,6 +720,8 @@ def set_status(
                       document=source["name"], tab=tab_title,
                       occurrences=changed, tab_locked=tab_locked,
                       verified=payload["verified"])
+            if payload["verified"] and status.lower() in {"done", "erledigt"}:
+                verify.record_wo_symbols(root, int(wo), verify_symbols)
             return payload
 
         raise gdocs.SyncError(

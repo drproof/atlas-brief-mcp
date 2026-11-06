@@ -10,6 +10,8 @@
 
 [Why atlas](#-the-refusal-why-atlas-exists) · [Measured Benchmarks](#-measured-benchmarks) · [30s Quickstart](#-30-second-quickstart) · [Bootstrap (`atlas init`)](#-bootstrap-an-existing-repository) · [MCP Client Setup](#-mcp-client-setup) · [The 15 Tools](#-the-15-tools) · [Google Docs & Sheets](#-google-docs--sheets-optional)
 
+![atlas-brief-mcp overview](assets/atlas-linkedin-card.jpg)
+
 ---
 
 `atlas` is a local MCP server for coding agents. Ask *"where is the damage model described?"* and get back a file, a line, and a section anchor (~60 tokens) — instead of dumping 20,000+ tokens of raw Markdown into the context window.
@@ -167,8 +169,10 @@ Test functions (`test_*`, `Test*`, `*_test`) and framework-bound functions (`@de
 `atlas init` creates `docs/ARCHITECTURE.md` with `Work Order 1 — ⬜ OPEN`. If no Google document is bound to the project, `atlas` writes straight into that local Markdown file — with the same contract, read-back verification, and `.atlas/mutations.log` audit trail:
 
 ```bash
-atlas set-status --wo 1 --status done    # ⬜ OPEN -> ✅ DONE in the Markdown file
-atlas status                             # Reads the verified state
+atlas set-status --wo 1 --status done --verify-symbols my_func   # ⬜ OPEN -> ✅ DONE + records symbol
+atlas set-status --task "Balance damage" --status done           # - [ ] -> - [x] in Markdown
+atlas status                                                     # Reads the verified state
+atlas check                                                      # CI / pre-commit regression guard
 ```
 
 ---

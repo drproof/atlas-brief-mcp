@@ -240,3 +240,39 @@ def test_dead_class_does_not_pass_the_gate(tmp_path):
     assert result["symbols"][0]["calls"] == 0
     assert result["symbols"][0]["refs"] == 0
     assert result["ok"] is False
+
+
+def test_publish_records_wo_symbols_and_check_project_catches_later_regression(tmp_path):
+    """Closing a WO with `verify_symbols` persists `.atlas/wo-symbols.yml` so `atlas check` catches later caller removal."""
+    from atlas import bootstrap, indexer
+
+    root = _project(
+        tmp_path,
+        "func dispatch_skill(id: String) -> void:\n\tpass\n\n"
+        "func on_turn() -> void:\n\tdispatch_skill('slash')\n",
+    )
+    bootstrap.init_project(root)
+    conn = indexer.open_index(root)
+    indexer.refresh(conn, root, force=True)
+
+    # 1. Close Work Order 1 with verify_symbols -> automatically recorded in wo-symbols.yml
+    res = publish.set_status(root, conn, 1, status="done", verify_symbols=["dispatch_skill"])
+    assert res["verified"] is True
+    assert verify.load_wo_symbols(root).get(1) == ["dispatch_skill"]
+
+    # 2. `check_project` passes while the caller is present
+    report_ok = verify.check_project(root, conn)
+    assert report_ok["ok"] is True
+    assert report_ok["monitored_work_orders"] == 1
+
+    # 3. Now simulate a cleanup pass that removes the caller `on_turn()`
+    (root / "scripts" / "unit.gd").write_text(
+        "func dispatch_skill(id: String) -> void:\n\tpass\n",
+        encoding="utf-8",
+    )
+    report_broken = verify.check_project(root, conn)
+    assert report_broken["ok"] is False
+    assert len(report_broken["regressions"]) == 1
+    assert report_broken["regressions"][0]["wo"] == 1
+    assert "never called" in verify.render_check(report_broken)
+

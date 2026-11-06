@@ -215,6 +215,8 @@ def build_parser() -> argparse.ArgumentParser:
                    help="rows shown in the table (default 12)")
 
     sub.add_parser("doctor", parents=[common], help="diagnostics")
+    sub.add_parser("check", parents=[common],
+                   help="verify completed work-order symbols and implements links (CI / pre-commit)")
 
     p = sub.add_parser("init", parents=[common],
                        help="bootstrap a repo: doc skeleton, rule files, index")
@@ -577,6 +579,15 @@ def main(argv: list[str] | None = None) -> int:
             payload["attachment_regressions"] = []
             payload["verify_error"] = str(error)
         _emit(json.dumps(payload, ensure_ascii=False), as_json)
+    elif args.command == "check":
+        from . import verify
+
+        report = verify.check_project(root, conn)
+        if as_json:
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+        else:
+            print(verify.render_check(report))
+        return 0 if report["ok"] else 1
     elif args.command == "log":
         from . import audit
 

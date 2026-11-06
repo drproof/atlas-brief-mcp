@@ -1,0 +1,33 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-07-09/server.schema.json",
+  "name": "io.github.drproof/atlas-brief-mcp",
+  "description": "Local BM25/FTS5 section index, task memory, and multi-language code wiring gate for AI coding agents.",
+  "repository": {
+    "url": "https://github.com/drproof/atlas-brief-mcp",
+    "source": "github"
+  },
+  "version": "0.2.3",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "identifier": "atlas-brief-mcp",
+      "version": "0.2.3",
+      "transport": {
+        "type": "stdio"
+      },
+      "packageArguments": [
+        {
+          "type": "positional",
+          "value": "serve"
+        }
+      ],
+      "environmentVariables": [
+        {
+          "name": "ATLAS_ROOT",
+          "description": "Root folder of the project whose Markdown documentation should be indexed.",
+          "default": "."
+        }
+      ]
+    }
+  ]
+}

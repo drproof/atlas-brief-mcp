@@ -57,6 +57,29 @@ def load_wo_symbols(root) -> dict[int, list[str]]:
     return mapping
 
 
+def record_wo_symbols(root, wo: int, symbols: list[str] | None) -> Path | None:
+    """Persist verified symbols for a completed Work Order into `.atlas/wo-symbols.yml`."""
+    cleaned = [str(s).strip() for s in (symbols or []) if str(s).strip()]
+    if not cleaned:
+        return None
+    try:
+        import yaml
+    except ImportError:  # pragma: no cover
+        return None
+    mapping = load_wo_symbols(root)
+    existing = mapping.get(int(wo), [])
+    merged = list(dict.fromkeys(existing + cleaned))
+    mapping[int(wo)] = merged
+    path = symbols_path(root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    ordered = {int(k): v for k, v in sorted(mapping.items())}
+    path.write_text(
+        yaml.safe_dump(ordered, allow_unicode=True, sort_keys=True),
+        encoding="utf-8",
+    )
+    return path
+
+
 def check(root, symbols: list[str]) -> dict:
     """Check each symbol for definition and wiring. No network, no index."""
     report = []
@@ -151,3 +174,67 @@ def regressions(root, work_orders: list[dict]) -> list[dict]:
                 "verdict": _verdict(entry),
             })
     return findings
+
+
+def check_project(root, conn) -> dict:
+    """Run CI / pre-commit wiring & link integrity checks across the repository.
+
+    1. Verifies that all symbols recorded in `.atlas/wo-symbols.yml` for completed
+       Work Orders are still defined and still have >= 1 caller/reference.
+    2. Verifies that all relative file paths declared in document `implements`
+       frontmatter still exist on disk.
+    """
+    import json
+    from . import status as status_mod
+
+    root_path = Path(root)
+    items = json.loads(status_mod.status(conn)).get("work_orders", [])
+    mapping = load_wo_symbols(root_path)
+    reg = regressions(root_path, items)
+
+    broken_implements: list[dict] = []
+    rows = conn.execute("SELECT id, path, implements FROM docs").fetchall()
+    for row in rows:
+        raw_impl = row["implements"] or "[]"
+        try:
+            impl_list = json.loads(raw_impl) if raw_impl.startswith("[") else [
+                p.strip() for p in raw_impl.split(",") if p.strip()
+            ]
+        except Exception:
+            impl_list = []
+        for rel_file in impl_list:
+            rel_str = str(rel_file).strip()
+            if not rel_str:
+                continue
+            if not (root_path / rel_str).exists():
+                broken_implements.append({
+                    "doc": row["id"],
+                    "doc_path": row["path"],
+                    "missing_file": rel_str,
+                })
+
+    ok = not reg and not broken_implements
+    return {
+        "ok": ok,
+        "monitored_work_orders": len(mapping),
+        "regressions": reg,
+        "broken_implements": broken_implements,
+    }
+
+
+def render_check(report: dict) -> str:
+    """Format `check_project` output for terminal / pre-commit hooks."""
+    if report["ok"]:
+        return (
+            f"✓ Wiring & link check passed "
+            f"({report['monitored_work_orders']} monitored work order(s), "
+            f"0 regressions, 0 broken implements links)."
+        )
+    lines = ["✗ Wiring / link check failed:"]
+    for item in report.get("regressions", []):
+        lines.append(f"  ✗ WO {item['wo']} ({item['title']}): {item['verdict']}")
+    for item in report.get("broken_implements", []):
+        lines.append(
+            f"  ✗ {item['doc_path']}: implements '{item['missing_file']}' does not exist"
+        )
+    return "\n".join(lines)

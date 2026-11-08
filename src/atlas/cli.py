@@ -147,13 +147,26 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("status", parents=[common], help="progress: work order status")
     sub.add_parser("lint", parents=[common], help="check structure (cleanup list)")
 
-    p = sub.add_parser("brief", parents=[common], help="build a delegation prompt from the docs")
-    p.add_argument("goal")
+    p = sub.add_parser("brief", parents=[common],
+                       help="build a delegation prompt from the docs (or next open Work Order)")
+    p.add_argument("goal", nargs="?", default="",
+                   help="topic/goal (optional: defaults to --wo or the next open Work Order)")
     p.add_argument("--sections", type=int, default=5, help="number of sections (default 5)")
     p.add_argument("--max-chars", type=int, default=8000)
     p.add_argument("--wo", type=int, help="work order number for the closing block")
     p.add_argument("--file", dest="files", action="append", default=[], metavar="PATH",
                    help="affected code file (repeatable)")
+    p.add_argument("--no-rules", action="store_true", help="omit guardrails")
+
+    p = sub.add_parser("next", parents=[common],
+                       help="build the task brief for the next open (or in-progress) Work Order")
+    p.add_argument("--wo", type=int, default=None, help="optional explicit Work Order number")
+    p.add_argument("--all", dest="all_open", action="store_true",
+                   help="include ALL open Work Orders in sequential execution order (same as `atlas next+`)")
+    p.add_argument("--no-rules", action="store_true", help="omit guardrails")
+
+    p = sub.add_parser("next+", parents=[common],
+                       help="build a sequential execution queue brief for ALL open Work Orders")
     p.add_argument("--no-rules", action="store_true", help="omit guardrails")
 
     p = sub.add_parser("auth", parents=[common], help="Google consent (OAuth, opens the browser)")
@@ -534,16 +547,24 @@ def main(argv: list[str] | None = None) -> int:
         _emit(search_mod.tasks(conn, status=args.status, owner=args.owner), as_json)
     elif args.command == "links":
         _emit(search_mod.links(conn, args.anchor), as_json)
-    elif args.command == "brief":
+    elif args.command in ("brief", "next", "next+"):
         from . import brief as brief_mod
 
+        refresh(conn, root)
+        goal = getattr(args, "goal", "") or ""
+        max_sections = getattr(args, "sections", 5)
+        max_chars = getattr(args, "max_chars", 8000)
+        extra_files = getattr(args, "files", [])
+        wo = getattr(args, "wo", None)
+        all_open = (args.command == "next+") or bool(getattr(args, "all_open", False))
         print(brief_mod.build(
-            conn, root, args.goal,
-            max_sections=args.sections,
-            max_chars=args.max_chars,
+            conn, root, goal,
+            max_sections=max_sections,
+            max_chars=max_chars,
             include_rules=not args.no_rules,
-            work_order=args.wo,
-            extra_files=args.files,
+            work_order=wo,
+            extra_files=extra_files,
+            all_open=all_open,
         ))
     elif args.command == "status":
         from . import status as status_mod

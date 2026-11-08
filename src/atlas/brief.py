@@ -84,24 +84,105 @@ def _trim_rules(text: str) -> str:
     return text.strip()
 
 
+def find_next_work_order(conn, work_order: int | None = None) -> dict | None:
+    """Return the requested Work Order, or the next open Work Order (prioritizing in-progress ones)."""
+    open_orders = find_open_work_orders(conn, work_order=work_order)
+    return open_orders[0] if open_orders else None
+
+
+def find_open_work_orders(conn, work_order: int | None = None) -> list[dict]:
+    """Return all open Work Orders ordered with in-progress (`🚧`) first, then by WO number."""
+    from . import status as status_mod
+
+    orders = status_mod.extract_work_orders(conn)
+    if work_order is not None:
+        matched = [item for item in orders if item["wo"] == int(work_order)]
+        return matched
+    open_orders = [item for item in orders if item["status"] == "open"]
+    in_progress = [
+        item for item in open_orders
+        if 0 < item.get("steps_done", 0) < item.get("steps_total", 0)
+    ]
+    not_started = [item for item in open_orders if item not in in_progress]
+    return in_progress + not_started
+
+
+def _symbol_status_lines(root: Path, symbols: list[str]) -> list[str]:
+    """Check current definition and caller status for target symbols across the codebase."""
+    from . import verify
+
+    result = verify.check(root, symbols[:8])
+    lines: list[str] = []
+    for item in result.get("symbols", []):
+        sym = item["symbol"]
+        if not item["defined"]:
+            lines.append(f"- `{sym}` — **not defined yet** (needs implementation)")
+        else:
+            calls = item["calls"]
+            refs = item["refs"]
+            state = f"{calls} call(s), {refs} ref(s)" if (calls + refs) > 0 else "⚠️ 0 callers (unwired)"
+            lines.append(f"- `{sym}` — defined in `{item['definition']}` ({state})")
+    return lines
+
+
 def build(
     conn,
     root: Path,
-    goal: str,
+    goal: str = "",
     max_sections: int = MAX_SECTIONS,
     max_chars: int = MAX_CHARS,
     include_rules: bool = True,
     work_order: int | None = None,
     extra_files: list[str] | None = None,
+    all_open: bool = False,
 ) -> str:
-    """Build the task brief as Markdown."""
+    """Build the task brief as Markdown (for one Work Order/goal, or the full open queue when `all_open=True`)."""
+    from . import verify
+
+    if all_open:
+        return build_queue(conn, root, max_chars=max_chars, include_rules=include_rules)
+
+    wo_item = find_next_work_order(conn, work_order=work_order) if (work_order is not None or not goal.strip()) else None
+    if wo_item is not None and work_order is None:
+        work_order = wo_item["wo"]
+    if not goal.strip():
+        if wo_item is not None:
+            goal = wo_item["title"] or f"Work Order {wo_item['wo']}"
+        else:
+            return (
+                "# Task brief: No open Work Orders\n\n"
+                "_All documented Work Orders are completed (`✅ DONE`). "
+                "Create a new one with `atlas plan \"<topic>\" --step \"...\"`._\n"
+            )
+
     hits = search_mod.run_search(conn, goal, k=max_sections * 3)
 
     selected: list[dict] = []
     seen: set[str] = set()
+
+    # If the Work Order explicitly links a `spec_anchor`, include that section first.
+    spec_anchor = (wo_item or {}).get("spec_anchor") or ""
+    if spec_anchor:
+        base_spec = spec_anchor.split("~")[0]
+        row = conn.execute(
+            "SELECT anchor, doc_id, path, line_start, heading, breadcrumb "
+            "FROM sections WHERE anchor = ? OR anchor LIKE ? ORDER BY part LIMIT 1",
+            (base_spec, base_spec + "~%"),
+        ).fetchone()
+        if row is not None:
+            seen.add(base_spec)
+            selected.append({
+                "anchor": row["anchor"],
+                "doc_id": row["doc_id"],
+                "path": row["path"],
+                "line": row["line_start"],
+                "heading": row["heading"],
+                "breadcrumb": row["breadcrumb"] or "",
+            })
+
     for hit in hits:
         base = hit["anchor"].split("~")[0]
-        if base in seen:
+        if base in seen or base.endswith("#3-work-orders"):
             continue
         seen.add(base)
         selected.append(hit)
@@ -171,22 +252,52 @@ def build(
         if rules:
             lines.extend(["## 3. Guardrails (still in force)", "", rules, ""])
 
-    lines.extend([
-        "## 4. Work order",
-        "",
-        "- [ ] Break the goal into checkable steps",
-        "- [ ] Read the affected files from section 2 first",
-        "- [ ] Verify after the change (test/run) and quote the result",
-        "",
-    ])
+    wo_steps = (wo_item or {}).get("steps") or []
+    recorded_syms = verify.load_wo_symbols(root).get(int(work_order), []) if work_order else []
+    if wo_steps:
+        done_cnt = sum(1 for s in wo_steps if s.get("done"))
+        lines.extend([
+            f"## 4. Work Order {work_order} Checklist ({done_cnt}/{len(wo_steps)} steps done)",
+            "",
+        ])
+        next_step = next((s["text"] for s in wo_steps if not s.get("done")), None)
+        if next_step:
+            lines.append(f"👉 **Next open step:** `{next_step}`")
+            lines.append("")
+        for step in wo_steps:
+            mark = "x" if step.get("done") else " "
+            lines.append(f"- [{mark}] {step['text']}")
+        lines.append("")
+    else:
+        lines.extend([
+            "## 4. Work order",
+            "",
+            "- [ ] Break the goal into checkable steps",
+            "- [ ] Read the affected files from section 2 first",
+            "- [ ] Verify after the change (test/run) and quote the result",
+            "",
+        ])
+
+    if recorded_syms:
+        sym_lines = _symbol_status_lines(root, recorded_syms)
+        if sym_lines:
+            lines.extend([
+                "### Target symbols (wiring gate)",
+                "",
+                *sym_lines,
+                "",
+            ])
 
     if work_order:
+        sym_flag = f" --verify-symbols {','.join(recorded_syms)}" if recorded_syms else ""
         lines.extend([
             f"## 5. Closing (mandatory — work order {work_order})",
             "",
             "Record the status through the tool. Do **not** edit the document yourself:",
             "",
             "```",
+            *([f'atlas set-status --task "<step substring>" --status done'] if wo_steps else []),
+            f'atlas set-status --wo {work_order} --status done{sym_flag}',
             f'atlas publish --wo {work_order} --title "<title>" '
             '--desc "<one sentence: what was implemented>"',
             "```",
@@ -214,3 +325,110 @@ def build(
     if len(text) > max_chars * 2:
         text = text[: max_chars * 2].rstrip() + "\n\n_… brief truncated._\n"
     return text
+
+
+def build_queue(
+    conn,
+    root: Path,
+    max_chars: int = MAX_CHARS * 2,
+    include_rules: bool = True,
+) -> str:
+    """Build a sequential multi-Work-Order execution queue (`atlas next+`) covering all open Work Orders."""
+    from . import verify
+
+    open_orders = find_open_work_orders(conn)
+    if not open_orders:
+        return (
+            "# Work Order Queue (`atlas next+`): No open Work Orders\n\n"
+            "_All documented Work Orders are completed (`✅ DONE`). "
+            "Create new ones with `atlas plan \"<topic>\" --step \"...\"`._\n"
+        )
+
+    sym_map = verify.load_wo_symbols(root)
+    wo_numbers = ", ".join(f"WO {item['wo']}" for item in open_orders)
+    lines: list[str] = [
+        f"# Work Order Queue (`atlas next+`): {len(open_orders)} open ({wo_numbers})",
+        "",
+        f"_Generated on {date.today().isoformat()}. Execute each Work Order sequentially from top to bottom. "
+        "Do **not** skip ahead: finish every `- [ ]` step, run tests, check off each step with "
+        "`atlas_set_status(task=..., status='done')`, and close the Work Order with "
+        "`atlas_set_status(wo=<N>, status='done')` before starting the next Work Order._",
+        "",
+    ]
+
+    per_wo_budget = max(800, max_chars // max(1, len(open_orders)))
+    for idx, item in enumerate(open_orders, start=1):
+        wo_num = item["wo"]
+        title = item["title"] or f"Work Order {wo_num}"
+        steps = item.get("steps") or []
+        done_cnt = sum(1 for s in steps if s.get("done"))
+        state_badge = "🚧 IN PROGRESS" if 0 < done_cnt < len(steps) else "⬜ OPEN"
+        lines.append(f"## {idx}. Work Order {wo_num} — {state_badge}: {title}")
+        lines.append("")
+
+        # Locate spec section (either explicit spec_anchor or top BM25 hit)
+        spec_anchor = item.get("spec_anchor") or ""
+        if not spec_anchor:
+            hits = search_mod.run_search(conn, title, k=3)
+            hit = next(
+                (h for h in hits if not h["anchor"].split("~")[0].endswith("#3-work-orders")),
+                None,
+            )
+            if hit:
+                spec_anchor = hit["anchor"].split("~")[0]
+
+        files: list[str] = []
+        if spec_anchor:
+            payload = json.loads(
+                search_mod.read(conn, spec_anchor, max_chars=min(SECTION_CHARS, per_wo_budget))
+            )
+            if "body" in payload:
+                links_data = json.loads(search_mod.links(conn, spec_anchor))
+                for f in _parse_list(links_data.get("implements", "")):
+                    if f not in files:
+                        files.append(f)
+                for found in FILE_RE.finditer(payload["body"]):
+                    rel = found.group(0).replace("res://", "")
+                    if rel not in files:
+                        files.append(rel)
+                lines.append(
+                    f"**Spec section:** `{spec_anchor}` (*{payload['path']}:{payload['line']} — {payload['heading']}*)"
+                )
+                lines.append("")
+                lines.append(payload["body"])
+                lines.append("")
+
+        if files:
+            lines.append("**Affected files:** " + ", ".join(f"`{f}`" for f in files))
+            lines.append("")
+
+        if steps:
+            lines.append(f"**Steps ({done_cnt}/{len(steps)} done):**")
+            for step in steps:
+                mark = "x" if step.get("done") else " "
+                lines.append(f"- [{mark}] {step['text']}")
+            lines.append("")
+
+        recorded_syms = sym_map.get(int(wo_num), [])
+        if recorded_syms:
+            lines.append("**Target symbols (wiring gate):**")
+            lines.extend(_symbol_status_lines(root, recorded_syms))
+            lines.append("")
+
+        sym_flag = f" --verify-symbols {','.join(recorded_syms)}" if recorded_syms else ""
+        lines.extend([
+            f"**Checkoff for Work Order {wo_num}:**",
+            "```",
+            *([f'atlas set-status --task "<step substring>" --status done'] if steps else []),
+            f"atlas set-status --wo {wo_num} --status done{sym_flag}",
+            "```",
+            "",
+        ])
+
+    if include_rules:
+        rules = _load_rules(root)
+        if rules:
+            lines.extend(["## Guardrails (in force for all Work Orders)", "", rules, ""])
+
+    return "\n".join(lines)
+

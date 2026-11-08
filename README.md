@@ -171,10 +171,15 @@ Test functions (`test_*`, `Test*`, `*_test`) and framework-bound functions (`@de
 `atlas init` creates `docs/ARCHITECTURE.md` with `Work Order 1 — ⬜ OPEN`. If no Google document is bound to the project, `atlas` writes straight into that local Markdown file — with the same contract, read-back verification, and `.atlas/mutations.log` audit trail:
 
 ```bash
-# 1. Plan a new Work Order (auto-links the matching spec section via atlas_where + writes - [ ] steps)
+# 1. Plan Work Orders (auto-links the matching spec section via atlas_where + writes - [ ] steps)
 atlas plan "Damage model" --step "Apply armor curve" --step "Test crit multiplier" --symbols apply_damage
+atlas plan "Dialogue conditions" --step "Parse flag expressions" --symbols eval_condition
 
-# 2. Check off steps and close the Work Order (blocks if steps are open or symbols have 0 callers)
+# 2. Fetch the task brief for the next open Work Order — or the entire open queue (`atlas next+`)
+atlas next                                                       # Brief for the next open (or 🚧) Work Order
+atlas next+                                                      # Sequential execution queue for ALL open Work Orders
+
+# 3. Check off steps and close the Work Order (blocks if steps are open or symbols have 0 callers)
 atlas set-status --task "Apply armor curve" --status done        # - [ ] -> - [x] (WO shows 🚧 1/2 steps)
 atlas set-status --task "Test crit multiplier" --status done     # - [ ] -> - [x] (2/2 steps)
 atlas set-status --wo 2 --status done --verify-symbols apply_damage  # ⬜ OPEN -> ✅ DONE
@@ -238,7 +243,7 @@ Same block as above. On Windows, use `"command": "atlas.exe"` if the bare comman
 | **Read & Search** | `atlas_outline` | Full table of contents across all indexed documents (or one `doc`) |
 | **Read & Search** | `atlas_links` | Section cross-references, tags, sibling sections, and linked `implements:` code files |
 | **Workflow & Briefs** | `atlas_plan` | Create an open Work Order with `- [ ]` steps, auto-linked to its spec anchor via `atlas_where` |
-| **Workflow & Briefs** | `atlas_brief` | Build a self-contained subagent task brief (sections + affected files + guardrails) |
+| **Workflow & Briefs** | `atlas_brief` | Build a task brief for the next open Work Order (or the full open queue via `all_open=True` / `atlas next+`) |
 | **Workflow & Briefs** | `atlas_tasks` | List open/done Markdown checkbox tasks (`- [ ]` / `- [x]`), filterable by `@owner` |
 | **Workflow & Briefs** | `atlas_status` | List all Work Orders (`⬜ OPEN`, `🚧 IN PROGRESS`, `✅ DONE`), spec anchors, and step progress |
 | **Code & Wiring** | `atlas_code_find` | Locate symbol definitions, signatures, **and call/reference counts** across 9 languages |
@@ -319,11 +324,11 @@ atlas measure --questions my-questions.txt    # One question per line
 ## 🧪 Automated Tests
 
 ```bash
-uv run pytest -q                                           # 217 unit & integration tests (offline)
+uv run pytest -q                                           # 218 unit & integration tests (offline)
 uv run python scripts/smoke_mcp.py --root examples/demo    # End-to-end JSON-RPC MCP smoke test
 ```
 
-All 217 tests run completely offline. Every Google Docs & Sheets interaction is tested against deterministic fakes — including edge cases where the API swallows a write or lags on export.
+All 218 tests run completely offline. Every Google Docs & Sheets interaction is tested against deterministic fakes — including edge cases where the API swallows a write or lags on export.
 
 ## 📄 License
 

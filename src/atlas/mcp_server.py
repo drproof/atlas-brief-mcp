@@ -397,13 +397,14 @@ def atlas_brief(
     goal: Annotated[
         str,
         Field(
+            default="",
             description=(
-                "One-sentence description of the task to prepare a brief for "
-                "(e.g. 'wire the dwarf vault-charger perk into turn_manager')."
+                "Optional one-sentence description of the task to prepare a brief for "
+                "(e.g. 'wire the dwarf vault-charger perk into turn_manager'). "
+                "When omitted or empty, automatically builds the brief for `work_order` or the next open Work Order."
             ),
-            min_length=1,
         ),
-    ],
+    ] = "",
     max_sections: Annotated[
         int,
         Field(
@@ -419,8 +420,8 @@ def atlas_brief(
             default=None,
             ge=1,
             description=(
-                "Optional Work Order number (e.g. 7). When provided, the brief includes the exact "
-                "`atlas_publish` / `atlas_set_status` closing command for that Work Order."
+                "Optional Work Order number (e.g. 7). When provided, loads that Work Order's linked `spec_anchor`, "
+                "`- [ ]` steps, and target symbol status from `.atlas/wo-symbols.yml`."
             ),
         ),
     ] = None,
@@ -434,22 +435,32 @@ def atlas_brief(
             ),
         ),
     ] = None,
+    all_open: Annotated[
+        bool,
+        Field(
+            default=False,
+            description=(
+                "If true (`atlas next+` mode), build a sequential execution queue covering ALL open "
+                "Work Orders in order so the agent can work through the entire backlog step by step (default false)."
+            ),
+        ),
+    ] = False,
 ) -> str:
-    """Assemble a self-contained Markdown task brief for a coding agent or subagent.
+    """Assemble a self-contained Markdown task brief for a coding agent or subagent (for one Work Order, or the full open queue via `all_open=True`).
 
-    Use this tool before starting or delegating a feature task. It bundles the top matching spec
-    sections (with stable anchors), linked source file paths, open tasks, project guardrails, and
-    the verified checkoff command so the subagent does not need to search from scratch.
+    Use this tool before starting or delegating a feature task. Call `atlas_brief()` with no arguments to
+    automatically brief the next open (or `🚧` in-progress) Work Order, or pass `all_open=True` (`atlas next+`)
+    to generate a sequential execution queue for all open Work Orders.
 
     Behavior & Output:
-    - Read-only aggregation of indexed documentation sections and code metadata.
-    - Returns a formatted Markdown brief string ready to paste into a subagent prompt.
+    - Read-only aggregation of indexed documentation sections, Work Order steps, and code metadata.
+    - Returns a formatted Markdown brief string ready to follow or paste into a subagent prompt.
     """
     root, conn = _fresh()
     from . import brief as brief_mod
 
     return brief_mod.build(conn, root, goal, max_sections=max_sections,
-                           work_order=work_order, extra_files=files)
+                           work_order=work_order, extra_files=files, all_open=all_open)
 
 
 @mcp.tool(

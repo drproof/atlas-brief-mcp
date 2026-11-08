@@ -596,7 +596,8 @@ AGENTS_TEMPLATE = """# Project guidelines: {name}
 | "Where is ...?" | `atlas_where("topic")` |
 | Full section text | `atlas_read("<anchor>")` |
 | Which work orders are done? | `atlas_status()` |
-| Task brief for a subagent | `atlas_brief("task")` |
+| Plan a new work order + steps | `atlas_plan("topic", steps=[...])` |
+| Task brief (or next open WO) | `atlas_brief()` |
 | Symbol/file in code | `atlas_code_find("name")` |
 
 **Mandatory:**

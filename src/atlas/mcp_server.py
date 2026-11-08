@@ -20,6 +20,8 @@ INSTRUCTIONS = (
     "never open the Markdown sources or .atlas/cache with Read/Grep. Those files are "
     "large; the index is faster and returns only the relevant section. "
     "Flow: atlas_where('topic') -> atlas_read(anchor) for the full text. "
+    "PLANNING: use atlas_plan to create a new open Work Order with `- [ ]` steps "
+    "(it automatically links the matching spec anchor via atlas_where). "
     "WRITING: call atlas_set_status and atlas_publish only after tests are green — "
     "marking something done is the last step, never the first. Design prose, formulas "
     "and balancing numbers are read-only; autonomous writes are limited to status "
@@ -521,6 +523,81 @@ def atlas_publish(
         result = publish_mod.publish(
             root, conn, wo, status=status, title=title, description=description,
             verify_symbols=verify_symbols,
+        )
+    except (gdocs.SyncError, ValueError) as error:
+        return json.dumps({"written": False, "error": str(error)}, ensure_ascii=False)
+    return json.dumps(result, ensure_ascii=False)
+
+
+@mcp.tool(
+    annotations=ToolAnnotations(
+        title="Plan New Open Work Order with Steps",
+        readOnlyHint=False,
+        destructiveHint=False,
+        idempotentHint=True,
+        openWorldHint=False,
+    )
+)
+@_health
+def atlas_plan(
+    topic: Annotated[
+        str,
+        Field(
+            min_length=1,
+            description=(
+                "Title or topic of the Work Order to create (e.g. 'Damage Over Time' or 'Dialogue conditions'). "
+                "Automatically searched against the documentation index (`atlas_where`) to link the matching spec anchor and `implements:` files."
+            ),
+        ),
+    ],
+    steps: Annotated[
+        list[str] | None,
+        Field(
+            default=None,
+            description=(
+                "Optional list of concrete implementation steps to record as `- [ ]` checkboxes under the Work Order "
+                "(e.g. ['Apply burn stacks in effects.py', 'Call tick_effects at end of turn', 'Add unit test']). "
+                "All steps must be checked off via `atlas_set_status(task=..., status='done')` before the Work Order can be marked done."
+            ),
+        ),
+    ] = None,
+    wo: Annotated[
+        int | None,
+        Field(
+            default=None,
+            ge=1,
+            description="Optional explicit Work Order number. Omit or pass null to automatically assign the next free Work Order number.",
+        ),
+    ] = None,
+    verify_symbols: Annotated[
+        list[str] | None,
+        Field(
+            default=None,
+            description=(
+                "Optional list of target function or class names expected from this Work Order "
+                "(pre-registered in `.atlas/wo-symbols.yml` so the wiring gate enforces them on completion)."
+            ),
+        ),
+    ] = None,
+) -> str:
+    """Create a new `⬜ OPEN` Work Order in local documentation, automatically linking the matching spec section (`atlas_where`), `implements:` files, and `- [ ]` checklist steps.
+
+    Use this tool when planning a new feature or breaking a user request into structured steps before coding.
+    Unlike `atlas_publish` (which records a finished result), `atlas_plan` assigns the next free Work Order
+    number, looks up the relevant spec anchor via BM25 search, and writes a checkable `- [ ]` step list.
+
+    Behavior & Output:
+    - Queries the documentation index for `topic`, attaches `Spec <anchor> (<path>:<line>)` and any `implements:` files.
+    - Writes `Work Order <N> — ⬜ OPEN (<topic>): ...` plus `- [ ] <step>` lines into `docs/ARCHITECTURE.md`.
+    - Pre-records `verify_symbols` in `.atlas/wo-symbols.yml` when provided.
+    - Returns JSON `{written, verified, wo, title, spec_anchor, spec_origin, implements, steps, line}`.
+    """
+    from . import gdocs, publish as publish_mod
+
+    root, conn = _fresh()
+    try:
+        result = publish_mod.plan(
+            root, conn, topic, steps=steps, wo=wo, verify_symbols=verify_symbols,
         )
     except (gdocs.SyncError, ValueError) as error:
         return json.dumps({"written": False, "error": str(error)}, ensure_ascii=False)

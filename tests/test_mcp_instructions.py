@@ -49,7 +49,7 @@ def test_only_names_tools_that_exist():
 def test_all_tools_have_annotations_and_parameter_descriptions():
     """Every tool must expose MCP ToolAnnotations and descriptions for all parameters (TDQS)."""
     tools = asyncio.run(mcp_server.mcp.list_tools())
-    assert len(tools) == 15
+    assert len(tools) == 16
     for tool in tools:
         assert tool.annotations is not None, f"{tool.name} is missing ToolAnnotations"
         assert tool.annotations.title, f"{tool.name} is missing annotations.title"

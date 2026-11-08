@@ -14,8 +14,10 @@ from datetime import datetime, timezone
 
 WO_RE = re.compile(r"Work\s*Order\s*(\d+)", re.IGNORECASE)
 DONE_RE = re.compile(r"✅|☑|ERLEDIGT|ABGESCHLOSSEN|\bDONE\b", re.IGNORECASE)
-OPEN_RE = re.compile(r"⬜|☐|OFFEN|OPEN|AUSSTEHEND|\bTODO\b|\[ \]", re.IGNORECASE)
+OPEN_RE = re.compile(r"⬜|☐|🚧|OFFEN|OPEN|AUSSTEHEND|\bTODO\b|\bIN[\s_-]+PROGRESS\b|\[ \]", re.IGNORECASE)
 SYMBOL_RE = re.compile(r"`([A-Za-z_][A-Za-z0-9_]{2,})(?:\(\))?`")
+SPEC_ANCHOR_RE = re.compile(r"`([a-z0-9][a-z0-9_-]*#[a-z0-9][a-z0-9_-]*)`", re.IGNORECASE)
+STEP_LINE_RE = re.compile(r"^[ \t]*(?:[-*+]|\d+\.)[ \t]+\[(?P<mark>[ xX])\][ \t]+(?P<text>.+)$")
 
 
 def _title(line: str, pos: int) -> str:
@@ -30,7 +32,7 @@ def _title(line: str, pos: int) -> str:
 
 
 def extract_work_orders(conn: sqlite3.Connection) -> list[dict]:
-    """Find 'Work Order N' entries along with their status and mentioned symbols.
+    """Find 'Work Order N' entries along with their status, spec anchor, steps, and symbols.
 
     Only lines with a status marker immediately after the number count — prose
     mentions like "API from Work Order 1" are not status declarations. Searches
@@ -60,14 +62,31 @@ def extract_work_orders(conn: sqlite3.Connection) -> list[dict]:
 
             status = "done" if done and not open_ else ("open" if open_ else "unknown")
 
-            # Symbols often appear in the lines immediately following the entry.
-            context = "\n".join(lines[index: index + 8])
+            # Collect lines belonging to this Work Order until the next Work Order or heading.
+            block_lines: list[str] = [line]
+            steps: list[dict] = []
+            for follow in lines[index + 1:]:
+                stripped = follow.strip()
+                if stripped.startswith("#") or WO_RE.search(follow):
+                    break
+                block_lines.append(follow)
+                step_match = STEP_LINE_RE.match(follow)
+                if step_match:
+                    steps.append({
+                        "text": step_match.group("text").strip(),
+                        "done": step_match.group("mark").lower() == "x",
+                    })
+
+            context = "\n".join(block_lines[:12])
+            spec_match = SPEC_ANCHOR_RE.search(context)
+            spec_anchor = spec_match.group(1) if spec_match else ""
+
             symbols: list[str] = []
             for symbol in SYMBOL_RE.findall(context):
                 if symbol not in symbols:
                     symbols.append(symbol)
 
-            items[number] = {
+            entry: dict = {
                 "wo": number,
                 "status": status,
                 "title": _title(line, match.end()),
@@ -75,6 +94,13 @@ def extract_work_orders(conn: sqlite3.Connection) -> list[dict]:
                 "anchor": row["anchor"],
                 "heading": row["heading"],
             }
+            if spec_anchor:
+                entry["spec_anchor"] = spec_anchor
+            if steps:
+                entry["steps"] = steps
+                entry["steps_done"] = sum(1 for s in steps if s["done"])
+                entry["steps_total"] = len(steps)
+            items[number] = entry
     return [items[key] for key in sorted(items)]
 
 
@@ -121,7 +147,22 @@ def status_text(payload: dict) -> str:
         f"{counts['open']} open, {counts['unknown']} unknown"
     ]
     for wo in payload["work_orders"]:
-        lines.append(f"  {marks[wo['status']]} WO {wo['wo']:>2}  {wo['title']}")
+        steps = wo.get("steps") or []
+        steps_done = wo.get("steps_done", 0)
+        steps_total = wo.get("steps_total", 0)
+        mark = marks[wo["status"]]
+        if wo["status"] == "open" and 0 < steps_done < steps_total:
+            mark = "🚧"
+        extras: list[str] = []
+        if wo.get("spec_anchor"):
+            extras.append(f"spec: {wo['spec_anchor']}")
+        if steps_total:
+            extras.append(f"{steps_done}/{steps_total} steps")
+        suffix = f"  [{', '.join(extras)}]" if extras else ""
+        lines.append(f"  {mark} WO {wo['wo']:>2}  {wo['title']}{suffix}")
+        for step in steps:
+            box = "☑" if step["done"] else "☐"
+            lines.append(f"        {box} {step['text']}")
     if payload.get("truncated"):
         lines.append(f"  … truncated ({payload.get('returned')} of "
                      f"{counts['total']}) — `--json` returns all.")

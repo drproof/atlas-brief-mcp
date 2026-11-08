@@ -176,6 +176,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--verify-symbols", default="",
                    help="comma-separated symbols this order built (wiring gate)")
 
+    p = sub.add_parser("plan", parents=[common],
+                       help="plan a new open work order with auto-linked spec anchor and steps")
+    p.add_argument("topic", help="work order title / topic (automatically matched via atlas_where)")
+    p.add_argument("--step", dest="steps", action="append", default=[], metavar="TEXT",
+                   help="checkable step `- [ ] ...` under this work order (repeatable)")
+    p.add_argument("--wo", type=int, default=None,
+                   help="explicit work order number (default: next free number)")
+    p.add_argument("--section", default="Work Orders",
+                   help="heading of the target section (default: 'Work Orders')")
+    p.add_argument("--symbols", default="",
+                   help="comma-separated target symbols to pre-register in .atlas/wo-symbols.yml")
+    p.add_argument("--dry-run", action="store_true", help="preview without writing")
+
     p = sub.add_parser("set-status", parents=[common],
                        help="change the status of a work order or checkbox task")
     p.add_argument("--wo", type=int, default=None, help="work order number")
@@ -334,6 +347,39 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         if result.get("refused"):
             return 1
+        if result.get("dry_run"):
+            return 0
+        return 0 if result.get("verified") else 1
+
+    if args.command == "plan":
+        from . import gdocs, publish as publish_mod
+
+        conn = open_index(root)
+        refresh(conn, root)
+        try:
+            result = publish_mod.plan(
+                root, conn, args.topic,
+                steps=args.steps,
+                wo=args.wo,
+                section=args.section,
+                verify_symbols=_symbols(args.symbols),
+                dry_run=args.dry_run,
+            )
+        except (gdocs.SyncError, ValueError) as error:
+            print(f"Error: {error}", file=sys.stderr)
+            return 1
+
+        if as_json:
+            print(json.dumps(result, ensure_ascii=False, indent=2))
+        else:
+            prefix = "[dry-run] " if result.get("dry_run") else ""
+            print(f"{prefix}Planned Work Order {result.get('wo')} in {result.get('path', '(local)')}:")
+            for ln in (result.get("line") or "").splitlines():
+                print(f"  {ln}")
+            if result.get("spec_anchor"):
+                print(f"\n  Auto-linked spec: {result['spec_anchor']} ({result.get('spec_origin')})")
+            if result.get("implements"):
+                print(f"  Linked code files: {', '.join(result['implements'])}")
         if result.get("dry_run"):
             return 0
         return 0 if result.get("verified") else 1

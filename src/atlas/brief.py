@@ -21,11 +21,10 @@ MAX_SECTIONS = 5
 SECTION_CHARS = 1600
 MAX_CHARS = 8000
 
-# Code paths in the GDD usually appear inline in prose ("scripts/camp_hub.gd"),
-# not in frontmatter. Extract them from the matched sections.
+# Code paths in the GDD/docs usually appear inline in prose ("scripts/camp_hub.gd",
+# "src/atlas/search.py"), not only in frontmatter. Extract them from matched sections.
 FILE_RE = re.compile(
-    r"(?:res://)?(?:scripts|scenes|shaders|assets|quests|data|tools|addons)"
-    r"/[\w./-]+\.(?:gd|tscn|tres|json|gdshader|glsl)",
+    r"(?:res://)?[\w.-]+(?:/[\w.-]+)+\.(?:gd|tscn|tres|json|gdshader|glsl|py|ts|tsx|js|jsx|rs|cs|go|java|kt|swift)",
     re.IGNORECASE,
 )
 

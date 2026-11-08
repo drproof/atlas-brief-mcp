@@ -582,6 +582,30 @@ def set_status(
 
     items = status_mod.extract_work_orders(conn)
     current = next((item for item in items if item["wo"] == int(wo)), None)
+
+    # Unchecked steps gate: if a Work Order defines `- [ ]` steps, all steps must
+    # be checked off before the Work Order itself can be marked `done`.
+    if status.lower() in {"done", "erledigt"} and current is not None and not dry_run:
+        open_steps = [s["text"] for s in (current.get("steps") or []) if not s.get("done")]
+        if open_steps:
+            refusal_msg = (
+                f"Acceptance refused — Work Order {int(wo)} still has "
+                f"{len(open_steps)} open step(s):\n"
+                + "\n".join(f"  ✗ [ ] {step}" for step in open_steps)
+                + "\n\nComplete and check off each step (`atlas_set_status(task=..., status='done')`) "
+                "before marking the Work Order done."
+            )
+            audit.log(root, "set_status_refused", wo=wo, status=status,
+                      open_steps=open_steps, refused=True, written=False, verified=False)
+            return {
+                "changed": False,
+                "refused": True,
+                "refusal": refusal_msg,
+                "wo": int(wo),
+                "status": status.lower(),
+                "open_steps": open_steps,
+                **gate,
+            }
     # No Google document bound to this project: write locally to the managed
     # Markdown docs. Without this branch, the workflow `atlas init` sets up
     # ("status is a tool call") ended in an error for any user without a
@@ -753,3 +777,87 @@ def _work_order_lines(tab_texts: list[tuple[str, str, str]], wo: int,
                 if len(found) >= limit:
                     return found
     return found
+
+
+def plan(
+    root: Path,
+    conn,
+    topic: str,
+    steps: list[str] | None = None,
+    wo: int | None = None,
+    section: str = DEFAULT_SECTION,
+    verify_symbols: list[str] | None = None,
+    dry_run: bool = False,
+) -> dict:
+    """Create a new `⬜ OPEN` Work Order linked to the matching spec section (`atlas_where`) and checklist steps."""
+    from . import brief as brief_mod, localwrite, search as search_mod, status as status_mod
+
+    existing_wos = status_mod.extract_work_orders(conn)
+    if wo is None:
+        wo_num = max((item["wo"] for item in existing_wos), default=0) + 1
+    else:
+        wo_num = int(wo)
+
+    # Locate the matching specification section automatically (just like `atlas_where`),
+    # skipping the Work Orders logbook section itself so we point to the real spec.
+    hits = search_mod.run_search(conn, topic, k=5)
+    spec_hit = next(
+        (
+            h for h in hits
+            if "work order" not in (h.get("heading") or "").casefold()
+            and not (h.get("anchor") or "").endswith("#3-work-orders")
+        ),
+        hits[0] if hits else None,
+    )
+
+    spec_anchor = ""
+    spec_origin = ""
+    implements: list[str] = []
+    if spec_hit is not None:
+        spec_anchor = spec_hit["anchor"].split("~")[0]
+        spec_origin = f"{spec_hit['path']}:{spec_hit['line']}"
+        links_data = json.loads(search_mod.links(conn, spec_anchor))
+        for item in brief_mod._parse_list(links_data.get("implements", "")):
+            if item not in implements:
+                implements.append(item)
+        body_data = json.loads(search_mod.read(conn, spec_anchor, max_chars=2000))
+        for found in brief_mod.FILE_RE.finditer(body_data.get("body", "")):
+            rel = found.group(0).replace("res://", "")
+            if rel not in implements:
+                implements.append(rel)
+
+    desc_parts: list[str] = []
+    if spec_anchor:
+        desc_parts.append(f"Spec `{spec_anchor}` ({spec_origin})")
+    if implements:
+        desc_parts.append("Files: " + ", ".join(f"`{f}`" for f in implements[:5]))
+    if verify_symbols:
+        clean_syms = [s.strip() for s in verify_symbols if s and s.strip()]
+        if clean_syms:
+            desc_parts.append("Symbols: " + ", ".join(f"`{s}`" for s in clean_syms))
+
+    header = format_line(
+        wo_num,
+        "open",
+        topic.strip(),
+        " · ".join(desc_parts) if desc_parts else "Implement according to project documentation.",
+    )
+    clean_steps = [s.strip() for s in (steps or []) if s and s.strip()]
+    block_lines = [header] + [f"- [ ] {step}" for step in clean_steps]
+    block = "\n".join(block_lines)
+
+    result = localwrite.publish(root, conn, wo_num, block, section, dry_run=dry_run)
+    if not dry_run and result.get("verified") and verify_symbols:
+        verify.record_wo_symbols(root, wo_num, verify_symbols)
+
+    result.update({
+        "wo": wo_num,
+        "title": topic.strip(),
+        "spec_anchor": spec_anchor,
+        "spec_origin": spec_origin,
+        "implements": implements,
+        "steps": clean_steps,
+        "verify_symbols": [s.strip() for s in (verify_symbols or []) if s and s.strip()],
+    })
+    return result
+

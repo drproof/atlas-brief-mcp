@@ -275,7 +275,12 @@ def publish(root: Path, conn, wo: int, line: str, section: str,
     _write_atomic(path, new_text)
 
     confirmed = find_line(root, wo)
-    verified = bool(confirmed and line.strip() in confirmed[2].group(0))
+    first_line = line.strip().splitlines()[0] if line.strip() else ""
+    verified = bool(
+        confirmed
+        and first_line in confirmed[2].group(0)
+        and line.strip() in confirmed[1]
+    )
     payload["verified"] = verified
     if not verified:
         payload["warning"] = "Line was written, but could not be read back from the file."

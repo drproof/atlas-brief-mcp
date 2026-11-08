@@ -204,3 +204,62 @@ def test_checkbox_task_toggle_and_wiring_gate(tmp_path):
     assert reopened["verified"] is True
     assert "- [ ] Wire damage calculator" in doc.read_text(encoding="utf-8")
 
+
+def test_plan_work_order_auto_links_spec_and_enforces_steps(tmp_path):
+    """`atlas plan` auto-links the spec section via search, tracks steps in status, and blocks DONE while steps are open."""
+    root, conn = _project(tmp_path)
+    spec_doc = root / "docs" / "02-combat.md"
+    spec_doc.write_text(
+        "---\nimplements: [core/engine.gd]\n---\n\n"
+        "# Combat System\n\n"
+        "## Damage Over Time\n\n"
+        "Burn stacks deal 5 fire damage at the end of each turn in `core/engine.gd`.\n",
+        encoding="utf-8",
+    )
+    indexer.refresh(conn, root, force=True)
+
+    # 1. Plan a new Work Order without specifying WO number or anchor manually
+    planned = publish_mod.plan(
+        root,
+        conn,
+        "Damage Over Time",
+        steps=["Implement apply_burn in engine.gd", "Call apply_burn in start()"],
+        verify_symbols=["apply_burn"],
+    )
+    assert planned["verified"] is True
+    assert planned["wo"] == 2
+    assert planned["spec_anchor"] == "02-combat#damage-over-time"
+    assert "core/engine.gd" in planned["implements"]
+
+    # 2. Check status output shows spec_anchor and 0/2 steps
+    status_data = json.loads(status_mod.status(conn))
+    wo2 = next(item for item in status_data["work_orders"] if item["wo"] == 2)
+    assert wo2["spec_anchor"] == "02-combat#damage-over-time"
+    assert wo2["steps_done"] == 0
+    assert wo2["steps_total"] == 2
+
+    # 3. Attempting to close WO 2 while steps are still open is refused
+    (root / "core" / "engine.gd").write_text(
+        "func apply_burn() -> int:\n\treturn 5\n\n"
+        "func start() -> void:\n\tapply_burn()\n",
+        encoding="utf-8",
+    )
+    refused = publish_mod.set_status(root, conn, wo=2, status="done")
+    assert refused["changed"] is False
+    assert refused["refused"] is True
+    assert len(refused["open_steps"]) == 2
+
+    # 4. Check off first step -> status_text shows 🚧 1/2 steps
+    publish_mod.set_status(root, conn, status="done", task="Implement apply_burn")
+    mid_status = json.loads(status_mod.status(conn))
+    rendered = status_mod.status_text(mid_status)
+    assert "🚧 WO  2" in rendered
+    assert "1/2 steps" in rendered
+
+    # 5. Check off second step, then close WO 2 -> succeeds!
+    publish_mod.set_status(root, conn, status="done", task="Call apply_burn")
+    closed = publish_mod.set_status(root, conn, wo=2, status="done")
+    assert closed["changed"] is True
+    assert closed["verified"] is True
+
+

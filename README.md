@@ -8,7 +8,7 @@
 
 **Project documentation as an index and a wiring gate — not as context fuel.**
 
-[Why atlas](#-the-refusal-why-atlas-exists) · [Measured Benchmarks](#-measured-benchmarks) · [30s Quickstart](#-30-second-quickstart) · [Bootstrap (`atlas init`)](#-bootstrap-an-existing-repository) · [MCP Client Setup](#-mcp-client-setup) · [The 15 Tools](#-the-15-tools) · [Google Docs & Sheets](#-google-docs--sheets-optional)
+[Why atlas](#-the-refusal-why-atlas-exists) · [Measured Benchmarks](#-measured-benchmarks) · [30s Quickstart](#-30-second-quickstart) · [Bootstrap (`atlas init`)](#-bootstrap-an-existing-repository) · [MCP Client Setup](#-mcp-client-setup) · [The 16 Tools](#-the-16-tools) · [Google Docs & Sheets](#-google-docs--sheets-optional)
 
 ![atlas-brief-mcp overview](assets/atlas-linkedin-card.jpg)
 
@@ -171,9 +171,14 @@ Test functions (`test_*`, `Test*`, `*_test`) and framework-bound functions (`@de
 `atlas init` creates `docs/ARCHITECTURE.md` with `Work Order 1 — ⬜ OPEN`. If no Google document is bound to the project, `atlas` writes straight into that local Markdown file — with the same contract, read-back verification, and `.atlas/mutations.log` audit trail:
 
 ```bash
-atlas set-status --wo 1 --status done --verify-symbols my_func   # ⬜ OPEN -> ✅ DONE + records symbol
-atlas set-status --task "Balance damage" --status done           # - [ ] -> - [x] in Markdown
-atlas status                                                     # Reads the verified state
+# 1. Plan a new Work Order (auto-links the matching spec section via atlas_where + writes - [ ] steps)
+atlas plan "Damage model" --step "Apply armor curve" --step "Test crit multiplier" --symbols apply_damage
+
+# 2. Check off steps and close the Work Order (blocks if steps are open or symbols have 0 callers)
+atlas set-status --task "Apply armor curve" --status done        # - [ ] -> - [x] (WO shows 🚧 1/2 steps)
+atlas set-status --task "Test crit multiplier" --status done     # - [ ] -> - [x] (2/2 steps)
+atlas set-status --wo 2 --status done --verify-symbols apply_damage  # ⬜ OPEN -> ✅ DONE
+atlas status                                                     # Reads the verified state + steps
 atlas check                                                      # CI / pre-commit regression guard
 ```
 
@@ -223,7 +228,7 @@ Same block as above. On Windows, use `"command": "atlas.exe"` if the bare comman
 
 ---
 
-## 🛠️ The 15 Tools
+## 🛠️ The 16 Tools
 
 | Category | Tool | Purpose |
 |---|---|---|
@@ -232,12 +237,13 @@ Same block as above. On Windows, use `"command": "atlas.exe"` if the bare comman
 | **Read & Search** | `atlas_read` | Read a single section by anchor (`offset` / `max_chars` budget control) |
 | **Read & Search** | `atlas_outline` | Full table of contents across all indexed documents (or one `doc`) |
 | **Read & Search** | `atlas_links` | Section cross-references, tags, sibling sections, and linked `implements:` code files |
+| **Workflow & Briefs** | `atlas_plan` | Create an open Work Order with `- [ ]` steps, auto-linked to its spec anchor via `atlas_where` |
 | **Workflow & Briefs** | `atlas_brief` | Build a self-contained subagent task brief (sections + affected files + guardrails) |
 | **Workflow & Briefs** | `atlas_tasks` | List open/done Markdown checkbox tasks (`- [ ]` / `- [x]`), filterable by `@owner` |
-| **Workflow & Briefs** | `atlas_status` | List all Work Orders (`⬜ OPEN`, `🚧 IN PROGRESS`, `✅ DONE`) with index freshness |
+| **Workflow & Briefs** | `atlas_status` | List all Work Orders (`⬜ OPEN`, `🚧 IN PROGRESS`, `✅ DONE`), spec anchors, and step progress |
 | **Code & Wiring** | `atlas_code_find` | Locate symbol definitions, signatures, **and call/reference counts** across 9 languages |
 | **Verified Writes** | `atlas_publish` | Append a verified Work Order status block — **blocks on `verify_symbols` with 0 callers** |
-| **Verified Writes** | `atlas_set_status` | Flip an existing Work Order status marker in-place — **with the same wiring gate** |
+| **Verified Writes** | `atlas_set_status` | Flip a Work Order or `- [ ]` step — **blocks if child steps are open or symbols have 0 callers** |
 | **Spreadsheets** | `atlas_sheets` | List indexed spreadsheet tabs, headers, and row keys |
 | **Spreadsheets** | `atlas_sheet_update` | Update balancing cells by `row_key` + **column name** (never fragile `C14` coordinates) |
 | **Spreadsheets** | `atlas_sheet_append` | Append new rows by column name mapping |
@@ -313,11 +319,11 @@ atlas measure --questions my-questions.txt    # One question per line
 ## 🧪 Automated Tests
 
 ```bash
-uv run pytest -q                                           # 216 unit & integration tests (offline)
+uv run pytest -q                                           # 217 unit & integration tests (offline)
 uv run python scripts/smoke_mcp.py --root examples/demo    # End-to-end JSON-RPC MCP smoke test
 ```
 
-All 216 tests run completely offline. Every Google Docs & Sheets interaction is tested against deterministic fakes — including edge cases where the API swallows a write or lags on export.
+All 217 tests run completely offline. Every Google Docs & Sheets interaction is tested against deterministic fakes — including edge cases where the API swallows a write or lags on export.
 
 ## 📄 License
 

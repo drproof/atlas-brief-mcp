@@ -942,6 +942,89 @@ def resource_section(anchor: str) -> str:
     return search_mod.read(conn, anchor, max_chars=8000)
 
 
+@mcp.prompt(
+    name="atlas_onboard",
+    title="Onboard New Coding Session",
+    description=(
+        "Load the project documentation outline, Work Order progress, and open checkbox "
+        "tasks in one step so a fresh agent session has complete context without reading raw files."
+    ),
+)
+def prompt_onboard() -> str:
+    """Build a ready-to-use onboarding context snapshot for a new chat session."""
+    from . import status as status_mod
+
+    _, conn = _fresh()
+    outline_data = json.loads(search_mod.outline(conn, max_chars=4000))
+    status_data = json.loads(status_mod.status(conn, limit=60, max_chars=60000))
+    tasks_data = json.loads(search_mod.tasks(conn, status="open"))
+    return (
+        "# Project Context Snapshot (atlas)\n\n"
+        f"{INSTRUCTIONS}\n\n"
+        "## 1. Work Orders (`atlas_status`)\n"
+        f"{status_mod.status_text(status_data)}\n\n"
+        "## 2. Open Checkbox Tasks (`atlas_tasks`)\n"
+        f"Open tasks: {tasks_data.get('count', 0)}\n"
+        + "\n".join(
+            f"- [ ] {t['text']} ({t['anchor']})"
+            for t in (tasks_data.get("tasks") or [])[:20]
+        )
+        + "\n\n## 3. Documentation Outline (`atlas_outline`)\n"
+        f"{outline_data.get('outline', '')}\n"
+    )
+
+
+@mcp.prompt(
+    name="atlas_task_brief",
+    title="Prepare Subagent Task Brief",
+    description=(
+        "Assemble a self-contained task brief with relevant documentation sections, "
+        "linked source files, guardrails, and the verified Work Order closing step."
+    ),
+)
+def prompt_task_brief(
+    goal: Annotated[
+        str,
+        Field(description="One-sentence description of the task to implement."),
+    ],
+    work_order: Annotated[
+        int | None,
+        Field(default=None, description="Optional Work Order number for the closing checkoff call."),
+    ] = None,
+) -> str:
+    """Generate a self-contained subagent task brief."""
+    from . import brief as brief_mod
+
+    root, conn = _fresh()
+    return brief_mod.build(conn, root, goal, work_order=work_order)
+
+
+@mcp.prompt(
+    name="atlas_pre_commit_audit",
+    title="Pre-Commit Wiring and Documentation Audit",
+    description=(
+        "Verify that all symbols recorded for completed Work Orders remain defined and called, "
+        "and audit documentation structure before committing or closing a task."
+    ),
+)
+def prompt_pre_commit_audit() -> str:
+    """Run wiring regression check and documentation lint before committing."""
+    from . import bootstrap, lint as lint_mod, verify
+
+    root, conn = _fresh()
+    check_report = verify.check_project(root, conn)
+    lint_report = json.loads(lint_mod.lint(conn, managed=bootstrap.load_managed(root)))
+    return (
+        "# Pre-Commit Audit (atlas)\n\n"
+        "## 1. Wiring & Link Check (`atlas check`)\n"
+        f"{verify.render_check(check_report)}\n\n"
+        "## 2. Documentation Structure (`atlas lint`)\n"
+        f"Managed issues: {lint_report.get('managed_issues', 0)} · "
+        f"Discovered hints: {lint_report.get('discovered_issues', 0)} · "
+        f"Clean: {lint_report.get('ok', False)}\n"
+    )
+
+
 def run() -> None:
     try:
         root, conn = _state()

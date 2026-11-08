@@ -70,13 +70,14 @@ def main() -> int:
          "params": {"name": "atlas_outline", "arguments": {}}},
         {"jsonrpc": "2.0", "id": 6, "method": "tools/call",
          "params": {"name": "atlas_tasks", "arguments": {"status": "open"}}},
+        {"jsonrpc": "2.0", "id": 7, "method": "prompts/list", "params": {}},
     ]
 
     for request in requests:
         proc.stdin.write(json.dumps(request) + "\n")
     proc.stdin.flush()
 
-    pending = {1, 2, 3, 4, 5, 6}
+    pending = {1, 2, 3, 4, 5, 6, 7}
     failures = 0
     deadline = time.time() + 30
 
@@ -136,6 +137,9 @@ def main() -> int:
         elif message_id == 6:
             data = json.loads(result["content"][0]["text"])
             print(f"[ok] atlas_tasks  -> {data['count']} open tasks")
+        elif message_id == 7:
+            pnames = [p["name"] for p in result.get("prompts", [])]
+            print(f"[ok] prompts/list -> {len(pnames)} prompts: {', '.join(pnames)}")
 
     if pending:
         failures += 1

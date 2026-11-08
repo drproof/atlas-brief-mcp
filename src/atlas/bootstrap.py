@@ -470,6 +470,121 @@ def generate_architecture_skeleton(scan: dict, project: str = "") -> str:
     return "\n".join(lines)
 
 
+_DOMAIN_HEADING_RE = re.compile(
+    r"^###\s+1\.\d+\s+(?P<domain>[^\n—]+?)\s+—[^\n]*?(?:\[(?P<slug>[a-z0-9-]+)\])?[^\n]*$",
+    re.MULTILINE,
+)
+
+
+def _extract_domain_notes(existing_text: str) -> dict[str, str]:
+    """Extract user-written prose/notes per domain from an existing ARCHITECTURE.md."""
+    notes: dict[str, str] = {}
+    matches = list(_DOMAIN_HEADING_RE.finditer(existing_text))
+    risks_pos = existing_text.find("\n## 2.")
+    if risks_pos == -1:
+        risks_pos = len(existing_text)
+
+    for idx, match in enumerate(matches):
+        domain = match.group("domain").strip()
+        slug = (match.group("slug") or _domain_slug(domain)).strip()
+        start = match.end()
+        end = matches[idx + 1].start() if idx + 1 < len(matches) else risks_pos
+        block = existing_text[start:end]
+
+        kept_lines: list[str] = []
+        for line in block.splitlines():
+            stripped = line.strip()
+            if stripped == "Files (by size):":
+                continue
+            if stripped.startswith("- `") and (" lines, ~" in stripped or " line, ~" in stripped):
+                continue
+            if re.match(r"^-\s+…\s+\d+\s+more$", stripped):
+                continue
+            if stripped.startswith("Core symbols:"):
+                continue
+            kept_lines.append(line)
+
+        cleaned = "\n".join(kept_lines).strip()
+        if cleaned:
+            notes[domain] = cleaned
+            notes[slug] = cleaned
+    return notes
+
+
+def update_architecture_doc(existing_text: str, scan: dict, project: str = "") -> str:
+    """Refresh domain metrics, hotspots, and unwired symbols while preserving user domain notes and Work Orders."""
+    fresh = generate_architecture_skeleton(scan, project=project)
+    notes = _extract_domain_notes(existing_text)
+
+    # 1. Replace default TODO in fresh domain blocks with preserved user notes
+    default_todo = (
+        "TODO: what this domain is for, in two sentences, plus the "
+        "invariants a refactor must not break."
+    )
+    if notes:
+        rebuilt_domains: list[str] = []
+        pos = 0
+        for match in _DOMAIN_HEADING_RE.finditer(fresh):
+            domain = match.group("domain").strip()
+            slug = (match.group("slug") or _domain_slug(domain)).strip()
+            next_heading = fresh.find("\n### 1.", match.end())
+            risks_heading = fresh.find("\n## 2. Risks", match.end())
+            candidates = [p for p in (next_heading, risks_heading) if p != -1]
+            block_end = min(candidates) if candidates else len(fresh)
+
+            rebuilt_domains.append(fresh[pos:match.start()])
+            block = fresh[match.start():block_end]
+            user_note = notes.get(domain) or notes.get(slug)
+            if user_note:
+                block = block.replace(default_todo, user_note, 1)
+            rebuilt_domains.append(block)
+            pos = block_end
+        rebuilt_domains.append(fresh[pos:])
+        fresh = "".join(rebuilt_domains)
+
+    # 2. Preserve existing `## 3. Work Orders` (and anything after it) verbatim
+    wo_marker = "\n## 3."
+    old_wo_idx = existing_text.find(wo_marker)
+    new_wo_idx = fresh.find(wo_marker)
+    if old_wo_idx != -1 and new_wo_idx != -1:
+        tail = existing_text[old_wo_idx:].rstrip("\n") + "\n"
+        fresh = fresh[:new_wo_idx] + tail
+    return fresh
+
+
+HOOK_SCRIPT = """#!/usr/bin/env sh
+# Managed by `atlas init --hook`: verify completed Work Order symbols & links before commit
+atlas check
+"""
+
+
+def install_git_hook(root: Path, dry_run: bool = False) -> tuple[bool, str]:
+    """Install or update `.git/hooks/pre-commit` to run `atlas check`."""
+    hook_path = Path(root) / ".git" / "hooks" / "pre-commit"
+    rel = ".git/hooks/pre-commit"
+    if hook_path.exists():
+        existing = hook_path.read_text(encoding="utf-8", errors="replace")
+        if "atlas check" in existing:
+            return False, rel
+        if not dry_run:
+            suffix = ("" if existing.endswith("\n") else "\n") + "\n# atlas regression check\natlas check\n"
+            hook_path.write_text(existing + suffix, encoding="utf-8")
+            try:
+                hook_path.chmod(0o755)
+            except OSError:
+                pass
+        return True, f"{rel} (updated)"
+
+    if not dry_run:
+        hook_path.parent.mkdir(parents=True, exist_ok=True)
+        hook_path.write_text(HOOK_SCRIPT, encoding="utf-8")
+        try:
+            hook_path.chmod(0o755)
+        except OSError:
+            pass
+    return True, rel
+
+
 AGENTS_TEMPLATE = """# Project guidelines: {name}
 
 ## Documentation
@@ -592,11 +707,15 @@ def _ensure_gitignore(root: Path) -> bool:
 
 
 def init_project(root, out: str | Path = "docs/ARCHITECTURE.md",
-                 force: bool = False, dry_run: bool = False) -> dict:
+                 force: bool = False, dry_run: bool = False,
+                 update: bool = False, hook: bool = False) -> dict:
     """Scan, generate doc skeleton, rule files, and index. Returns a report.
 
     `dry_run` shows what would be created and writes nothing — the only safe
     way to preview the tool on an unfamiliar repository.
+    `update` refreshes metrics, hotspots, and unwired symbols in an existing
+    architecture document while preserving domain notes and Work Orders.
+    `hook` installs `.git/hooks/pre-commit` running `atlas check`.
     """
     root = Path(root).resolve()
     out_path = Path(out)
@@ -605,19 +724,31 @@ def init_project(root, out: str | Path = "docs/ARCHITECTURE.md",
 
     scan = scan_repository(root)
     created: list[str] = []
+    updated: list[str] = []
     kept: list[str] = []
     would_create: list[str] = []
 
-    if out_path.exists() and not force:
-        kept.append(out_path.relative_to(root).as_posix())
+    rel_out = out_path.relative_to(root).as_posix()
+    if out_path.exists() and update and not force:
+        if dry_run:
+            would_create.append(f"{rel_out} (updated)")
+        else:
+            existing_doc = out_path.read_text(encoding="utf-8")
+            out_path.write_text(
+                update_architecture_doc(existing_doc, scan, project=root.name),
+                encoding="utf-8",
+            )
+            updated.append(rel_out)
+    elif out_path.exists() and not force:
+        kept.append(rel_out)
     elif dry_run:
-        would_create.append(out_path.relative_to(root).as_posix())
+        would_create.append(rel_out)
     else:
         out_path.parent.mkdir(parents=True, exist_ok=True)
         out_path.write_text(
             generate_architecture_skeleton(scan, project=root.name), encoding="utf-8"
         )
-        created.append(out_path.relative_to(root).as_posix())
+        created.append(rel_out)
 
     for name, content in (
         ("AGENTS.md", AGENTS_TEMPLATE.format(name=root.name)),
@@ -647,6 +778,16 @@ def init_project(root, out: str | Path = "docs/ARCHITECTURE.md",
             _ensure_gitignore(root)
             created.append(".gitignore (updated)")
 
+    if hook:
+        changed_hook, hook_label = install_git_hook(root, dry_run=dry_run)
+        if changed_hook:
+            if dry_run:
+                would_create.append(hook_label)
+            else:
+                created.append(hook_label)
+        else:
+            kept.append(hook_label)
+
     report = {
         "root": str(root),
         "dry_run": dry_run,
@@ -658,6 +799,7 @@ def init_project(root, out: str | Path = "docs/ARCHITECTURE.md",
         "unwired": len(scan["unwired"]),
         "document": str(out_path),
         "created": created,
+        "updated": updated,
         "kept": kept,
     }
     if not dry_run:

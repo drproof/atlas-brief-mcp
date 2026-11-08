@@ -415,3 +415,59 @@ def test_multiline_signature_has_correct_body_length(tmp_path):
 
     assert end == len(lines) - 1, f"Rumpf endet bei {end}, erwartet {len(lines) - 1}"
     assert end - start + 1 == 18  # 4 signature lines + 12 body + return + }
+
+
+def test_init_update_preserves_domain_notes_and_work_orders(tmp_path):
+    """`atlas init --update` refreshes metrics/hotspots/unwired while keeping domain prose and Work Orders."""
+    root = _dummy_repo(tmp_path)
+    bootstrap.init_project(root)
+    arch = root / "docs" / "ARCHITECTURE.md"
+    original = arch.read_text(encoding="utf-8")
+
+    # Simulate user adding custom domain prose in `### 1.x core` and marking Work Order 1 DONE + adding WO 2
+    customized = original.replace(
+        "Core symbols: `orphan_function`\n\nTODO: what this domain is for, in two sentences, plus the invariants a refactor must not break.",
+        "Core symbols: `orphan_function`\n\nCustom architecture note for core domain that must survive `--update`.",
+    ).replace(
+        "Work Order 1 — ⬜ OPEN (Complete the architecture doc):",
+        "Work Order 1 — ✅ DONE (Complete the architecture doc):\n\nWork Order 2 — 🚧 IN PROGRESS (Combat wiring): connect dispatcher.",
+    )
+    arch.write_text(customized, encoding="utf-8")
+
+    # Add a new file in a new domain `net/`
+    (root / "net").mkdir()
+    (root / "net" / "client.py").write_text(
+        "def connect_server():\n"
+        + "".join(f"    step_{i} = {i}\n" for i in range(16))
+        + "    return True\n",
+        encoding="utf-8",
+    )
+
+    report = bootstrap.init_project(root, update=True)
+    assert "docs/ARCHITECTURE.md" in report["updated"]
+
+    updated = arch.read_text(encoding="utf-8")
+    assert "Custom architecture note for core domain that must survive `--update`." in updated
+    assert "net — 1 file" in updated
+    assert "connect_server" in updated
+    assert "Work Order 1 — ✅ DONE (Complete the architecture doc):" in updated
+    assert "Work Order 2 — 🚧 IN PROGRESS (Combat wiring): connect dispatcher." in updated
+
+
+def test_init_hook_installs_pre_commit_hook(tmp_path):
+    """`atlas init --hook` writes an executable `.git/hooks/pre-commit` running `atlas check`."""
+    root = _dummy_repo(tmp_path)
+    (root / ".git" / "hooks").mkdir(parents=True)
+
+    report = bootstrap.init_project(root, hook=True)
+    assert ".git/hooks/pre-commit" in report["created"]
+
+    hook_file = root / ".git" / "hooks" / "pre-commit"
+    assert hook_file.exists()
+    content = hook_file.read_text(encoding="utf-8")
+    assert "atlas check" in content
+
+    # Second run is idempotent
+    report2 = bootstrap.init_project(root, hook=True)
+    assert ".git/hooks/pre-commit" in report2["kept"]
+

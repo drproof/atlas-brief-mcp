@@ -64,3 +64,14 @@ def test_all_tools_have_annotations_and_parameter_descriptions():
             assert desc and len(desc) >= 20, (
                 f"{tool.name}.{param_name} is missing a detailed description in inputSchema"
             )
+
+
+def test_all_prompts_registered_and_callable():
+    """Verify the 3 workflow MCP prompts are registered on the FastMCP server."""
+    prompts = asyncio.run(mcp_server.mcp.list_prompts())
+    names = {p.name for p in prompts}
+    assert names == {"atlas_onboard", "atlas_task_brief", "atlas_pre_commit_audit"}
+    for p in prompts:
+        assert p.description and len(p.description) >= 20
+        assert p.title
+

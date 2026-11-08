@@ -145,8 +145,10 @@ It also writes `AGENTS.md`, `.antigravityrules`, `.mcp.json`, and adds `.atlas/`
 
 ```bash
 atlas init --dry-run            # Preview what would be created, write nothing
+atlas init --update             # Refresh metrics, hotspots & unwired symbols while keeping your notes & Work Orders
+atlas init --hook               # Install a .git/hooks/pre-commit guard that runs `atlas check`
 atlas init --out docs/ARCH.md   # Custom output path
-atlas init --force              # Regenerate deliberately
+atlas init --force              # Regenerate deliberately from scratch
 ```
 
 `init` records what it created in `.atlas/managed.json`. `atlas lint` uses that to separate **managed** documents (must be clean, exit code `1`) from **discovered** legacy docs (reported as hints, exit code `0`).
@@ -241,6 +243,14 @@ Same block as above. On Windows, use `"command": "atlas.exe"` if the bare comman
 | **Spreadsheets** | `atlas_sheet_append` | Append new rows by column name mapping |
 | **Diagnostics** | `atlas_lint` | Check docs for duplicate anchors, oversized sections, and broken `implements:` paths |
 
+### Built-in MCP Prompts (`prompts/list`)
+
+| Prompt | Arguments | Purpose |
+|---|---|---|
+| `atlas_onboard` | — | Token-saving project onboarding (`atlas_outline` + `atlas_status` + `atlas_tasks` without reading full files) |
+| `atlas_task_brief` | `task`, `wo` (opt.) | Gather relevant spec sections, `implements:` code targets, and existing symbol callers before writing code |
+| `atlas_pre_commit_audit` | `wo`, `symbols` | Pre-commit audit checklist (`atlas_lint`, `atlas_code_find` wiring check, and verified `atlas_set_status`) |
+
 ---
 
 ## ☁️ Google Docs & Sheets (Optional)
@@ -303,11 +313,11 @@ atlas measure --questions my-questions.txt    # One question per line
 ## 🧪 Automated Tests
 
 ```bash
-uv run pytest -q                                           # 209 unit & integration tests (offline)
+uv run pytest -q                                           # 216 unit & integration tests (offline)
 uv run python scripts/smoke_mcp.py --root examples/demo    # End-to-end JSON-RPC MCP smoke test
 ```
 
-All 209 tests run completely offline. Every Google Docs & Sheets interaction is tested against deterministic fakes — including edge cases where the API swallows a write or lags on export.
+All 216 tests run completely offline. Every Google Docs & Sheets interaction is tested against deterministic fakes — including edge cases where the API swallows a write or lags on export.
 
 ## 📄 License
 

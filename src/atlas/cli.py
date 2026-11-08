@@ -224,6 +224,10 @@ def build_parser() -> argparse.ArgumentParser:
                    help="target path of the generated architecture doc")
     p.add_argument("--force", action="store_true",
                    help="overwrite existing docs (default: only add)")
+    p.add_argument("--update", action="store_true",
+                   help="refresh domain metrics, hotspots, and unwired symbols while keeping notes and Work Orders")
+    p.add_argument("--hook", action="store_true",
+                   help="install a Git pre-commit hook running 'atlas check'")
     p.add_argument("--dry-run", action="store_true",
                    help="show what would be created — write nothing")
 
@@ -449,8 +453,10 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "init":
         from . import bootstrap, lint as lint_mod
 
-        report = bootstrap.init_project(root, out=args.out, force=args.force,
-                                        dry_run=args.dry_run)
+        report = bootstrap.init_project(
+            root, out=args.out, force=args.force, dry_run=args.dry_run,
+            update=args.update, hook=args.hook,
+        )
         if args.dry_run:
             # Nothing written, so nothing to index or lint.
             print(json.dumps(report, ensure_ascii=False, indent=2))

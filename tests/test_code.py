@@ -316,10 +316,12 @@ def test_finds_all_nine_advertised_languages_and_checks_wiring(tmp_path):
 
 
 def test_find_and_render_with_include_body(tmp_path):
-    """`include_body=True` extracts only the function's lines (`line..end_line`) without reading the whole file."""
+    """`include_body=True` extracts the function body plus file context (header, enclosing class, sibling signatures)."""
     root = tmp_path / "pybody"
     (root / "src").mkdir(parents=True)
     (root / "src" / "calc.py").write_text(
+        "MAX_BONUS = 50\n\n"
+        "# Important invariant: a must be non-negative\n"
         "def helper_one(a: int) -> int:\n"
         "    step = a + 10\n"
         "    return step * 2\n\n"
@@ -330,14 +332,22 @@ def test_find_and_render_with_include_body(tmp_path):
 
     hits = code.find(root, "helper_one", include_body=True)
     assert len(hits) == 1
-    assert hits[0]["line"] == 1
-    assert hits[0]["end_line"] == 3
+    assert hits[0]["line"] == 4
+    assert hits[0]["context_start_line"] == 3
+    assert hits[0]["end_line"] == 6
+    assert "Important invariant" in hits[0]["body"]
     assert "step = a + 10" in hits[0]["body"]
-    assert "helper_two" not in hits[0]["body"]
+    assert "return b - 1" not in hits[0]["body"]
+    assert "MAX_BONUS = 50" in hits[0]["file_header"]
+    assert any("helper_two" in s for s in hits[0]["siblings"])
 
     rendered = code.render(root, "helper_one", include_body=True)
-    assert "src/calc.py:1-3" in rendered
+    assert "src/calc.py:4-6" in rendered
     assert "step = a + 10" in rendered
-    assert "helper_two" not in rendered
+    assert "MAX_BONUS = 50" in rendered
+    assert "Sibling symbols in src/calc.py" in rendered
+    assert "def helper_two(b: int) -> int" in rendered
+    assert "return b - 1" not in rendered
+
 
 

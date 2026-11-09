@@ -89,6 +89,94 @@ def _read(path: Path) -> str:
         return ""
 
 
+_HEADER_LINE_RE = re.compile(
+    r"^(?:extends\s+\S+|class_name\s+\S+|import\s+.+|from\s+\S+\s+import\s+.+"
+    r"|use\s+\S+|package\s+\S+|const\s+[A-Za-z_]\w*\s*[:=].+"
+    r"|[A-Z][A-Z0-9_]{2,}\s*(?::\s*[\w\[\]]+\s*)?=\s*.+)$"
+)
+
+
+def _extract_file_surface(
+    text: str,
+    lines: list[str],
+    def_idx: int,
+    end_idx: int,
+    symbol: str,
+    max_body_lines: int = 80,
+) -> dict:
+    """Build the working surface around a definition: leading comments/decorators, numbered body, file header, enclosing class, and sibling signatures."""
+    # 1. Include leading decorators and doc/invariant comments directly above the definition (up to 10 lines)
+    context_start = def_idx
+    while context_start > 0 and (def_idx - context_start) < 10:
+        prev = lines[context_start - 1].strip()
+        if prev.startswith(("@", "#", "//", "/*", "*", "*/")):
+            context_start -= 1
+        else:
+            break
+
+    slice_end = min(end_idx + 1, context_start + max_body_lines)
+    body_lines = lines[context_start:slice_end]
+    body_text = "\n".join(body_lines)
+    numbered_lines = [
+        f"{line_num:>5} | {content}"
+        for line_num, content in enumerate(body_lines, start=context_start + 1)
+    ]
+    if end_idx + 1 > slice_end:
+        tail = f"# … truncated ({end_idx - context_start + 1} lines total)"
+        body_text += f"\n{tail}"
+        numbered_lines.append(f"      | {tail}")
+
+    # 2. Enclosing class/struct if this definition is indented
+    enclosing_class = ""
+    def_indent = len(lines[def_idx]) - len(lines[def_idx].lstrip()) if def_idx < len(lines) else 0
+    if def_indent > 0:
+        for idx in range(def_idx - 1, -1, -1):
+            candidate = lines[idx]
+            if not candidate.strip():
+                continue
+            cand_indent = len(candidate) - len(candidate.lstrip())
+            if cand_indent < def_indent and CLASS_RE.match(candidate):
+                enclosing_class = f"L{idx + 1}: {candidate.strip().rstrip(':{').strip()}"
+                break
+
+    # 3. File-level imports & constants at the top of the file (first 60 lines, up to 10 items)
+    header_items: list[str] = []
+    for raw in lines[:60]:
+        stripped = raw.strip()
+        if _HEADER_LINE_RE.match(stripped):
+            header_items.append(stripped[:100])
+            if len(header_items) >= 10:
+                break
+
+    # 4. Sibling function signatures in the same file (up to 15)
+    siblings: list[str] = []
+    seen_sibs: set[tuple[int, str]] = set()
+    for pattern in DEF_PATTERNS:
+        for match in pattern.finditer(text):
+            name = match.group("name")
+            if not name or name in SKIP_KEYWORDS or name == symbol:
+                continue
+            s_line = text.count("\n", 0, match.start()) + 1
+            if (s_line, name) in seen_sibs:
+                continue
+            seen_sibs.add((s_line, name))
+            l_start = text.rfind("\n", 0, match.start()) + 1
+            l_end = text.find("\n", match.start())
+            sig = text[l_start: l_end if l_end != -1 else len(text)].strip().rstrip(":{").strip()
+            siblings.append(f"L{s_line}: {sig}")
+    siblings.sort(key=lambda item: int(item.split(":", 1)[0][1:]))
+
+    return {
+        "context_start_line": context_start + 1,
+        "end_line": end_idx + 1,
+        "body": body_text,
+        "numbered_body": "\n".join(numbered_lines),
+        "enclosing_class": enclosing_class,
+        "file_header": header_items,
+        "siblings": siblings[:15],
+    }
+
+
 def find(
     root,
     symbol: str,
@@ -145,12 +233,9 @@ def find(
                 if include_body and lines:
                     start_idx = max(0, line_no - 1)
                     end_idx = _func_body_end(lines, start_idx)
-                    entry["end_line"] = end_idx + 1
-                    slice_end = min(end_idx + 1, start_idx + max_body_lines)
-                    body_text = "\n".join(lines[start_idx:slice_end])
-                    if end_idx + 1 > slice_end:
-                        body_text += f"\n# … truncated ({end_idx - start_idx + 1} lines total)"
-                    entry["body"] = body_text
+                    entry.update(
+                        _extract_file_surface(text, lines, start_idx, end_idx, name, max_body_lines)
+                    )
                 hits.append(entry)
         for match in CLASS_RE.finditer(text):
             name = _class_match_name(match)
@@ -174,12 +259,9 @@ def find(
             if include_body and lines:
                 start_idx = max(0, line_no - 1)
                 end_idx = _func_body_end(lines, start_idx)
-                entry["end_line"] = end_idx + 1
-                slice_end = min(end_idx + 1, start_idx + max_body_lines)
-                body_text = "\n".join(lines[start_idx:slice_end])
-                if end_idx + 1 > slice_end:
-                    body_text += f"\n# … truncated ({end_idx - start_idx + 1} lines total)"
-                entry["body"] = body_text
+                entry.update(
+                    _extract_file_surface(text, lines, start_idx, end_idx, name, max_body_lines)
+                )
             hits.append(entry)
         if len(hits) >= limit:
             break
@@ -299,9 +381,19 @@ def render(
             lines.append(f"  {hit['path']}:{span}  {hit['signature']}")
             if include_body and hit.get("body"):
                 lines.append("  ```")
-                for b_line in hit["body"].splitlines():
+                block = hit.get("numbered_body") or hit["body"]
+                for b_line in block.splitlines():
                     lines.append(f"  {b_line}")
                 lines.append("  ```")
+                if hit.get("enclosing_class"):
+                    lines.append(f"  Enclosing type: {hit['enclosing_class']}")
+                if hit.get("file_header"):
+                    lines.append("  File header: " + " · ".join(hit["file_header"][:6]))
+                if hit.get("siblings"):
+                    lines.append(
+                        f"  Sibling symbols in {hit['path']} ({len(hit['siblings'])}): "
+                        + " | ".join(hit["siblings"][:8])
+                    )
     else:
         lines.append(f"No definition for '{symbol}' — used, but not defined.")
 

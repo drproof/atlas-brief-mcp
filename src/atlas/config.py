@@ -75,9 +75,9 @@ def doc_dirs(root: Path) -> list[Path]:
     and is only read, never written to directly.
     """
     found = [root / d for d in DOC_DIRS if (root / d).is_dir()]
-    cache = cache_dir(root) / "cache"
-    if cache.is_dir():
-        found.append(cache)
+    for cdir in (root / CACHE_DIR / "cache", root / LEGACY_CACHE_DIR / "cache"):
+        if cdir.is_dir() and cdir not in found:
+            found.append(cdir)
     return found or [root]
 
 

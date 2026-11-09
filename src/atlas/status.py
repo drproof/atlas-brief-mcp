@@ -45,7 +45,8 @@ def extract_work_orders(conn: sqlite3.Connection) -> list[dict]:
 
     items: dict[int, dict] = {}
     for row in rows:
-        lines = row["body"].splitlines()
+        heading_line = (row["heading"] or "").strip()
+        lines = ([heading_line] if heading_line else []) + row["body"].splitlines()
         for index, line in enumerate(lines):
             match = WO_RE.search(line)
             if not match:
@@ -54,10 +55,17 @@ def extract_work_orders(conn: sqlite3.Connection) -> list[dict]:
             if number in items:
                 continue
 
-            # Status marker must immediately follow the work order number.
+            # Status marker must immediately follow the work order number (or appear
+            # before the colon `:` when a longer title precedes the marker).
             window = line[match.end(): match.end() + 40]
             done = bool(DONE_RE.search(window))
             open_ = bool(OPEN_RE.search(window))
+            if not (done or open_):
+                leading = line[: match.start()]
+                if re.match(r"^[\s#*>\-_0-9.)]*$", leading):
+                    pre_colon = line[match.end():].split(":", 1)[0][:120]
+                    done = bool(DONE_RE.search(pre_colon))
+                    open_ = bool(OPEN_RE.search(pre_colon))
             if not (done or open_):
                 continue
 
@@ -115,6 +123,14 @@ def freshness(conn: sqlite3.Connection, now: datetime | None = None) -> str:
     """
     latest = conn.execute("SELECT MAX(synced_at) FROM sync_state").fetchone()
     last = (latest[0] if latest else "") or ""
+    if not last:
+        try:
+            from . import gdocs
+            if gdocs.recover_sources_from_cache(conn):
+                latest = conn.execute("SELECT MAX(synced_at) FROM sync_state").fetchone()
+                last = (latest[0] if latest else "") or ""
+        except Exception:
+            pass
     if not last:
         return "As of: local files only (no Google source synced)."
 
@@ -219,6 +235,7 @@ def status(
         counts[item["status"]] += 1
 
     open_tasks = conn.execute("SELECT COUNT(*) FROM tasks WHERE done = 0").fetchone()[0]
+    fresh_note = freshness(conn)
     last_sync = conn.execute(
         "SELECT MAX(synced_at) FROM sync_state"
     ).fetchone()[0] or ""
@@ -230,7 +247,7 @@ def status(
         "open_tasks": open_tasks,
         "docs": docs,
         "last_sync": last_sync,
-        "freshness": freshness(conn),
+        "freshness": fresh_note,
     }
 
     text = json.dumps(payload, ensure_ascii=False)

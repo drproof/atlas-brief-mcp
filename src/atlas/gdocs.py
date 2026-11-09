@@ -324,12 +324,53 @@ def assert_writable(conn, file_id: str) -> None:
         )
 
 
+def recover_sources_from_cache(conn) -> list[dict]:
+    """Re-populate `sync_state` from `.atlas/cache/*.md` frontmatter if `sync_state` was cleared."""
+    if conn is None:
+        return []
+    try:
+        row = conn.execute("SELECT value FROM meta WHERE key='root'").fetchone()
+    except Exception:
+        return []
+    if not row or not row["value"]:
+        return []
+    cache = cache_dir(Path(row["value"])) / "cache"
+    if not cache.is_dir():
+        return []
+
+    from .chunker import parse_frontmatter
+    from .indexer import set_sync_state
+
+    recovered: list[dict] = []
+    for path in sorted(cache.glob("*.md")):
+        try:
+            raw = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        meta, body, _ = parse_frontmatter(raw)
+        drive_id = str(meta.get("drive_id") or "").strip()
+        if not drive_id or str(meta.get("source") or "").strip() != "gdrive":
+            continue
+        kind = str(meta.get("kind") or "doc").strip()
+        mime = SHEET_MIME if kind == "sheet" else DOC_MIME
+        name = str(meta.get("title") or path.stem).strip()
+        synced_at = str(meta.get("synced_at") or "").strip()
+        set_sync_state(conn, drive_id, name, mime, "", synced_at, len(body), str(path))
+        recovered.append({"id": drive_id, "name": name, "mimeType": mime})
+    return recovered
+
+
 def known_sources(conn) -> list[dict]:
     """Return previously synced documents — basis for automatic sync."""
-    return [
+    if conn is None:
+        return []
+    rows = [
         {"id": row["drive_id"], "name": row["name"], "mimeType": row["mime"]}
         for row in conn.execute("SELECT drive_id, name, mime FROM sync_state")
     ]
+    if rows:
+        return rows
+    return recover_sources_from_cache(conn)
 
 
 def auto_sync(root: Path, conn, max_age_seconds: int = 300, quiet: bool = True):

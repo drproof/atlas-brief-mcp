@@ -502,6 +502,11 @@ def publish(
               verified=verified, modified=meta.get("modifiedTime", ""))
     if verified and status.lower() in {"done", "erledigt"}:
         verify.record_wo_symbols(root, int(wo), verify_symbols)
+    if conn is not None and not dry_run:
+        from . import localwrite
+        if localwrite.find_line(root, int(wo)) is not None:
+            localwrite.set_status(root, conn, int(wo), status, dry_run=False)
+            payload["local_synced"] = True
     return payload
 
 
@@ -746,12 +751,33 @@ def set_status(
                       verified=payload["verified"])
             if payload["verified"] and status.lower() in {"done", "erledigt"}:
                 verify.record_wo_symbols(root, int(wo), verify_symbols)
+            if conn is not None and not dry_run:
+                from . import localwrite
+                if localwrite.find_line(root, int(wo)) is not None:
+                    localwrite.set_status(root, conn, int(wo), status, dry_run=False)
+                    payload["local_synced"] = True
             return payload
 
         raise gdocs.SyncError(
             f"Line '{old_text}' is in tab '{tab_title}', but could not be "
             "replaced — likely split across multiple text runs. Check the doc manually."
         )
+
+    if conn is not None:
+        from . import localwrite
+        found_local = localwrite.find_line(root, int(wo))
+        if found_local is not None:
+            local_res = localwrite.set_status(root, conn, int(wo), status, dry_run=dry_run)
+            if not dry_run and local_res.get("verified"):
+                if status.lower() in {"done", "erledigt"}:
+                    verify.record_wo_symbols(root, int(wo), verify_symbols)
+                refreshed = localwrite.find_line(root, int(wo))
+                if refreshed is not None:
+                    mirror = _mirror_to_gdocs(
+                        root, conn, int(wo), refreshed[2].group(0).strip(), DEFAULT_SECTION
+                    )
+                    local_res.update(mirror)
+            return {**local_res, **gate}
 
     if current is None:
         raise gdocs.SyncError(
@@ -777,6 +803,72 @@ def _work_order_lines(tab_texts: list[tuple[str, str, str]], wo: int,
                 if len(found) >= limit:
                     return found
     return found
+
+
+def _mirror_to_gdocs(root: Path, conn, wo: int, text_block: str, section: str) -> dict:
+    """Best-effort mirror of a locally planned/updated Work Order into a bound Google Doc."""
+    if conn is None:
+        return {"gdocs_synced": False}
+    sources = [s for s in gdocs.known_sources(conn) if s["mimeType"] == gdocs.DOC_MIME]
+    if not sources:
+        return {"gdocs_synced": False}
+    try:
+        creds = gdocs.load_credentials(interactive=False, scopes=gdocs.WRITE_SCOPES)
+        _drive, _sheets, docs = gdocs.build_services(creds)
+    except Exception as exc:
+        return {"gdocs_synced": False, "gdocs_note": str(exc)}
+
+    candidate_sections = list(dict.fromkeys([
+        section, DEFAULT_SECTION, "Milestone", "Meilenstein", "Prototyp"
+    ]))
+    for source in sources:
+        try:
+            document = docs.documents().get(
+                documentId=source["id"], includeTabsContent=True
+            ).execute()
+        except TypeError:
+            try:
+                document = docs.documents().get(documentId=source["id"]).execute()
+            except Exception:
+                continue
+        except Exception:
+            continue
+
+        live_text = "\n".join(
+            tab_text(body) for _tid, _title, body in iter_tab_bodies(document)
+        )
+        if _status_line_re(int(wo)).search(live_text):
+            return {"gdocs_synced": True, "gdocs_document": source["name"], "gdocs_existing": True}
+
+        insert_index = None
+        tab_id = ""
+        for current_tab_id, _current_title, tab_body in iter_tab_bodies(document):
+            for sec_name in candidate_sections:
+                idx, _found_heading = find_insert_index(tab_body, sec_name)
+                if idx is not None:
+                    insert_index = idx
+                    tab_id = current_tab_id
+                    break
+            if insert_index is not None:
+                break
+
+        if insert_index is None:
+            continue
+
+        revision = document.get("revisionId", "")
+        body = _insert_request(insert_index, text_block, tab_id)
+        if revision:
+            body["writeControl"] = {"requiredRevisionId": revision}
+        try:
+            docs.documents().batchUpdate(documentId=source["id"], body=body).execute()
+            gdocs.sync(root, sources=[source], force=True, conn=conn)
+            from .indexer import invalidate_sync_state
+            invalidate_sync_state(conn, source["id"])
+            return {"gdocs_synced": True, "gdocs_document": source["name"]}
+        except Exception as exc:
+            return {"gdocs_synced": False, "gdocs_note": str(exc)}
+
+    return {"gdocs_synced": False}
 
 
 def plan(
@@ -847,8 +939,10 @@ def plan(
     block = "\n".join(block_lines)
 
     result = localwrite.publish(root, conn, wo_num, block, section, dry_run=dry_run)
-    if not dry_run and result.get("verified") and verify_symbols:
-        verify.record_wo_symbols(root, wo_num, verify_symbols)
+    if not dry_run and result.get("verified"):
+        if verify_symbols:
+            verify.record_wo_symbols(root, wo_num, verify_symbols)
+        result.update(_mirror_to_gdocs(root, conn, wo_num, block, section))
 
     result.update({
         "wo": wo_num,

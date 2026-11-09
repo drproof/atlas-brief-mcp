@@ -103,8 +103,9 @@ CREATE INDEX IF NOT EXISTS idx_tasks_path ON tasks(path);
 SCHEMA_VERSION = "2"
 
 # Everything regenerable from the source files. Dropped and rebuilt on a
-# schema version bump — Markdown remains the source of truth.
-CACHE_TABLES = ("sections_fts", "sections", "tasks", "docs", "sync_state")
+# schema version bump — Markdown remains the source of truth. `sync_state` is
+# preserved so bound Google Docs/Sheets are not forgotten across rebuilds.
+CACHE_TABLES = ("sections_fts", "sections", "tasks", "docs")
 
 
 def _rebuild_cache(conn: sqlite3.Connection) -> None:
@@ -371,14 +372,14 @@ def get_sync_state(conn: sqlite3.Connection, drive_id: str):
 
 
 def invalidate_sync_state(conn: sqlite3.Connection, drive_id: str) -> None:
-    """Forget the sync state of a document.
+    """Clear the cached `modified` timestamp of a document without unbinding it.
 
     Needed when the Drive export lags behind a write: `sync` wrote the stale
     text into the cache, but recorded the new `modifiedTime` in `sync_state`.
-    Without invalidation, the next `auto_sync` would treat the document as
-    unchanged and the new line would remain invisible indefinitely.
+    Resetting `modified` to `''` forces the next `auto_sync` to re-export the
+    document while keeping `drive_id` registered in `known_sources(conn)`.
     """
-    conn.execute("DELETE FROM sync_state WHERE drive_id = ?", (drive_id,))
+    conn.execute("UPDATE sync_state SET modified = '' WHERE drive_id = ?", (drive_id,))
     conn.commit()
 
 

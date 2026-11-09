@@ -268,3 +268,87 @@ def test_publish_live_doc_guard_switches_status_when_index_lags(monkeypatch, tmp
     assert result["reused_set_status"] is True
     assert result["verified"] is True
     assert "✅ DONE" in fake.tabs[0]["text"]
+
+
+def test_invalidate_sync_state_preserves_known_source(tmp_path):
+    from atlas.indexer import get_sync_state, invalidate_sync_state, open_index, set_sync_state
+
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "SPEC.md").write_text("# Spec\n\nText.\n", encoding="utf-8")
+    conn = open_index(tmp_path)
+    set_sync_state(
+        conn, "doc-123", "Master GDD", gdocs.DOC_MIME,
+        "2026-11-09T12:00:00Z", "2026-11-09T12:00:05Z", 500, "cache.md",
+    )
+    invalidate_sync_state(conn, "doc-123")
+
+    sources = gdocs.known_sources(conn)
+    assert len(sources) == 1
+    assert sources[0]["id"] == "doc-123"
+    state = get_sync_state(conn, "doc-123")
+    assert state is not None
+    assert state["modified"] == ""
+
+
+def test_recover_sources_from_cache_heals_empty_sync_state(tmp_path):
+    from atlas.indexer import open_index
+
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "SPEC.md").write_text("# Spec\n\nText.\n", encoding="utf-8")
+    conn = open_index(tmp_path)
+    cache_dir = tmp_path / ".atlas" / "cache"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    cached_doc = cache_dir / "master-gdd.md"
+    cached_doc.write_text(
+        "---\n"
+        "id: master-gdd\n"
+        "title: Master GDD\n"
+        "source: gdrive\n"
+        "kind: doc\n"
+        "drive_id: gdoc-777\n"
+        "synced_at: 2026-11-09T15:00:00+00:00\n"
+        "tags: [atlas, gdrive]\n"
+        "---\n\n"
+        "# Master GDD\n\nBody text.\n",
+        encoding="utf-8",
+    )
+
+    assert conn.execute("SELECT COUNT(*) FROM sync_state").fetchone()[0] == 0
+    sources = gdocs.known_sources(conn)
+    assert len(sources) == 1
+    assert sources[0] == {
+        "id": "gdoc-777",
+        "name": "Master GDD",
+        "mimeType": gdocs.DOC_MIME,
+    }
+    assert conn.execute("SELECT COUNT(*) FROM sync_state").fetchone()[0] == 1
+
+
+def test_hybrid_set_status_updates_local_when_gdocs_bound(monkeypatch, tmp_path):
+    """When a Work Order exists in local docs/ARCHITECTURE.md and Google Docs is bound,
+    set_status updates the local file and attempts to mirror to Google Docs."""
+    from atlas.indexer import open_index
+
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    arch = docs_dir / "ARCHITECTURE.md"
+    arch.write_text(
+        "# Architecture\n\n## 3. Work Orders\n\n"
+        "Work Order 4 — ⬜ OPEN (Cross-Agent Sync): Local work order.\n",
+        encoding="utf-8",
+    )
+    conn = open_index(tmp_path)
+
+    fake = FakeDocs()
+    monkeypatch.setattr(gdocs, "build_services", lambda creds: (None, None, fake))
+    monkeypatch.setattr(gdocs, "known_sources", lambda conn: [
+        {"id": "doc-1", "name": "Master GDD", "mimeType": gdocs.DOC_MIME}
+    ])
+    monkeypatch.setattr(gdocs, "assert_writable", lambda conn, file_id: None)
+    monkeypatch.setattr(gdocs, "sync", lambda *args, **kwargs: {"written": []})
+    monkeypatch.setattr(gdocs, "load_credentials", lambda **kwargs: object())
+
+    result = publish.set_status(tmp_path, conn, 4, status="done")
+    assert result["verified"] is True
+    assert "✅ DONE" in arch.read_text(encoding="utf-8")
+

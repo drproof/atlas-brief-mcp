@@ -30,7 +30,7 @@ from pathlib import Path
 # and symbol search must see the same languages. Otherwise `init` writes an
 # AGENTS.md recommending `atlas_code_find`, while the gate finds nothing in
 # a Python or TS project.
-from .bootstrap import DEF_PATTERNS, SKIP_KEYWORDS, iter_source_files
+from .bootstrap import DEF_PATTERNS, SKIP_KEYWORDS, _func_body_end, iter_source_files
 
 FUNC_RE = re.compile(
     # Full signature up to the trailing ':' — including 'static' and '-> Type'.
@@ -89,7 +89,14 @@ def _read(path: Path) -> str:
         return ""
 
 
-def find(root, symbol: str, limit: int = 20, exact: bool = False) -> list[dict]:
+def find(
+    root,
+    symbol: str,
+    limit: int = 20,
+    exact: bool = False,
+    include_body: bool = False,
+    max_body_lines: int = 80,
+) -> list[dict]:
     """Find definitions whose name contains the search term (case-insensitive).
 
     `exact=True` for the wiring gate: there only the definition with this exact
@@ -108,6 +115,7 @@ def find(root, symbol: str, limit: int = 20, exact: bool = False) -> list[dict]:
         if needle not in text.lower():
             continue
         rel = path.relative_to(root).as_posix()
+        lines = text.splitlines() if include_body else []
         seen_defs: set[tuple[int, str]] = set()
         for pattern in DEF_PATTERNS:
             for match in pattern.finditer(text):
@@ -125,7 +133,7 @@ def find(root, symbol: str, limit: int = 20, exact: bool = False) -> list[dict]:
                 line_start = text.rfind("\n", 0, match.start()) + 1
                 line_end = text.find("\n", match.start())
                 raw_line = text[line_start: line_end if line_end != -1 else len(text)]
-                hits.append({
+                entry: dict = {
                     "path": rel,
                     "line": line_no,
                     "kind": "func",
@@ -133,7 +141,17 @@ def find(root, symbol: str, limit: int = 20, exact: bool = False) -> list[dict]:
                     # Without trailing colon/brace: the signature, not the line.
                     # Works for `func f():`, `def f():`, and `function f() {`.
                     "signature": raw_line.strip().rstrip(":{").strip(),
-                })
+                }
+                if include_body and lines:
+                    start_idx = max(0, line_no - 1)
+                    end_idx = _func_body_end(lines, start_idx)
+                    entry["end_line"] = end_idx + 1
+                    slice_end = min(end_idx + 1, start_idx + max_body_lines)
+                    body_text = "\n".join(lines[start_idx:slice_end])
+                    if end_idx + 1 > slice_end:
+                        body_text += f"\n# … truncated ({end_idx - start_idx + 1} lines total)"
+                    entry["body"] = body_text
+                hits.append(entry)
         for match in CLASS_RE.finditer(text):
             name = _class_match_name(match)
             if not name or needle not in name.lower():
@@ -145,14 +163,24 @@ def find(root, symbol: str, limit: int = 20, exact: bool = False) -> list[dict]:
                 continue
             seen_defs.add((line_no, name))
             line_end = text.find("\n", match.start())
-            hits.append({
+            entry = {
                 "path": rel,
                 "line": line_no,
                 "kind": "class",
                 "symbol": name,
                 "signature": text[text.rfind("\n", 0, match.start()) + 1:
                                   line_end if line_end != -1 else len(text)].strip().rstrip(":{").strip(),
-            })
+            }
+            if include_body and lines:
+                start_idx = max(0, line_no - 1)
+                end_idx = _func_body_end(lines, start_idx)
+                entry["end_line"] = end_idx + 1
+                slice_end = min(end_idx + 1, start_idx + max_body_lines)
+                body_text = "\n".join(lines[start_idx:slice_end])
+                if end_idx + 1 > slice_end:
+                    body_text += f"\n# … truncated ({end_idx - start_idx + 1} lines total)"
+                entry["body"] = body_text
+            hits.append(entry)
         if len(hits) >= limit:
             break
 
@@ -242,8 +270,14 @@ def find_usages(root, symbol: str, limit: int = 20) -> list[dict]:
     return refs["calls"] + refs["refs"]
 
 
-def render(root, symbol: str, limit: int = 20, with_usage: bool = False) -> str:
-    hits = find(root, symbol, limit=limit)
+def render(
+    root,
+    symbol: str,
+    limit: int = 20,
+    with_usage: bool = False,
+    include_body: bool = False,
+) -> str:
+    hits = find(root, symbol, limit=limit, include_body=include_body)
     usage = references(root, symbol, limit=limit)
     total = usage["call_count"] + usage["ref_count"]
 
@@ -257,7 +291,17 @@ def render(root, symbol: str, limit: int = 20, with_usage: bool = False) -> str:
     if hits:
         lines.append(f"{len(hits)} definition(s) for '{symbol}':")
         for hit in hits:
-            lines.append(f"  {hit['path']}:{hit['line']}  {hit['signature']}")
+            span = (
+                f"{hit['line']}-{hit['end_line']}"
+                if include_body and hit.get("end_line")
+                else f"{hit['line']}"
+            )
+            lines.append(f"  {hit['path']}:{span}  {hit['signature']}")
+            if include_body and hit.get("body"):
+                lines.append("  ```")
+                for b_line in hit["body"].splitlines():
+                    lines.append(f"  {b_line}")
+                lines.append("  ```")
     else:
         lines.append(f"No definition for '{symbol}' — used, but not defined.")
 

@@ -245,8 +245,8 @@ Same block as above. On Windows, use `"command": "atlas.exe"` if the bare comman
 | **Workflow & Briefs** | `atlas_plan` | Create an open Work Order with `- [ ]` steps, auto-linked to its spec anchor via `atlas_where` |
 | **Workflow & Briefs** | `atlas_brief` | Build a task brief for the next open Work Order (or the full open queue via `all_open=True` / `atlas next+`) |
 | **Workflow & Briefs** | `atlas_tasks` | List open/done Markdown checkbox tasks (`- [ ]` / `- [x]`), filterable by `@owner` |
-| **Workflow & Briefs** | `atlas_status` | List all Work Orders (`⬜ OPEN`, `🚧 IN PROGRESS`, `✅ DONE`), spec anchors, and step progress |
-| **Code & Wiring** | `atlas_code_find` | Locate symbol definitions, signatures, **and call/reference counts** across 9 languages |
+| **Workflow & Briefs** | `atlas_status` | List all Work Orders (`⬜ OPEN`, `🚧 IN PROGRESS`, `✅ DONE`), spec anchors, steps, and `💡 ready to close` hints |
+| **Code & Wiring** | `atlas_code_find` | Locate symbol definitions, signatures, optional function bodies (`include_body`), **and call/ref counts** across 9 languages |
 | **Verified Writes** | `atlas_publish` | Append a verified Work Order status block — **blocks on `verify_symbols` with 0 callers** |
 | **Verified Writes** | `atlas_set_status` | Flip a Work Order or `- [ ]` step — **blocks if child steps are open or symbols have 0 callers** |
 | **Spreadsheets** | `atlas_sheets` | List indexed spreadsheet tabs, headers, and row keys |
@@ -324,11 +324,11 @@ atlas measure --questions my-questions.txt    # One question per line
 ## 🧪 Automated Tests
 
 ```bash
-uv run pytest -q                                           # 218 unit & integration tests (offline)
+uv run pytest -q                                           # 220 unit & integration tests (offline)
 uv run python scripts/smoke_mcp.py --root examples/demo    # End-to-end JSON-RPC MCP smoke test
 ```
 
-All 218 tests run completely offline. Every Google Docs & Sheets interaction is tested against deterministic fakes — including edge cases where the API swallows a write or lags on export.
+All 220 tests run completely offline. Every Google Docs & Sheets interaction is tested against deterministic fakes — including edge cases where the API swallows a write or lags on export.
 
 ## 📄 License
 

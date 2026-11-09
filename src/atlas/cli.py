@@ -266,6 +266,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--limit", type=int, default=20)
     p.add_argument("--usage", action="store_true",
                    help="also show call sites (definition vs. usage)")
+    p.add_argument("--body", action="store_true",
+                   help="extract and print the function/class body without reading the full file")
 
     sub.add_parser("serve", parents=[common], help="start the MCP server over stdio")
     return parser
@@ -672,11 +674,13 @@ def main(argv: list[str] | None = None) -> int:
         from . import code as code_mod
 
         if as_json:
-            print(json.dumps(code_mod.find(root, args.symbol, limit=args.limit),
-                             ensure_ascii=False, indent=2))
+            print(json.dumps(
+                code_mod.find(root, args.symbol, limit=args.limit, include_body=args.body),
+                ensure_ascii=False, indent=2,
+            ))
         else:
             print(code_mod.render(root, args.symbol, limit=args.limit,
-                                  with_usage=args.usage))
+                                  with_usage=args.usage, include_body=args.body))
     return 0
 
 

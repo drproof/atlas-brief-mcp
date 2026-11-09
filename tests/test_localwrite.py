@@ -256,8 +256,14 @@ def test_plan_work_order_auto_links_spec_and_enforces_steps(tmp_path):
     assert "🚧 WO  2" in rendered
     assert "1/2 steps" in rendered
 
-    # 5. Check off second step, then close WO 2 -> succeeds!
+    # 5. Check off second step -> before closing, status reports `ready_to_close: True`
     publish_mod.set_status(root, conn, status="done", task="Call apply_burn")
+    ready_data = json.loads(status_mod.status(conn))
+    wo2_ready = next(item for item in ready_data["work_orders"] if item["wo"] == 2)
+    assert wo2_ready.get("ready_to_close") is True
+    assert "ready to close: all symbols wired" in status_mod.status_text(ready_data)
+
+    # 6. Close WO 2 -> succeeds!
     closed = publish_mod.set_status(root, conn, wo=2, status="done")
     assert closed["changed"] is True
     assert closed["verified"] is True

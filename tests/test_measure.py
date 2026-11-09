@@ -104,3 +104,29 @@ def test_json_payload_is_serialisable(small_project):
     payload = measure.measure(root, conn, sample=2)
 
     json.dumps(payload)  # must not raise
+
+
+def test_measure_includes_code_symbol_benchmark(small_project):
+    """`atlas measure` also benchmarks `atlas_code_find` against reading full source files."""
+    root, conn = small_project
+    src = root / "src"
+    src.mkdir()
+    (src / "monolith.py").write_text(
+        ("# large header comment line for realistic file token count\n" * 300)
+        + "def compute_critical_damage(base: int, mult: float) -> int:\n"
+        + "".join(f"    val_{i} = base + {i}\n" for i in range(15))
+        + "    return int(val_14 * mult)\n",
+        encoding="utf-8",
+    )
+
+    payload = measure.measure(root, conn, sample=2)
+    assert "code" in payload
+    assert payload["code"]["files"] == 1
+    assert payload["code"]["symbols"] == 1
+    assert payload["code"]["saved"] > 0.8
+
+    rendered = measure.render(payload)
+    assert "Code files: 1" in rendered
+    assert "compute_critical_damage" in rendered
+    assert "Code Total" in rendered
+

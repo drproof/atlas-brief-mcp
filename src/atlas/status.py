@@ -11,6 +11,7 @@ import re
 import sqlite3
 
 from datetime import datetime, timezone
+from pathlib import Path
 
 WO_RE = re.compile(r"Work\s*Order\s*(\d+)", re.IGNORECASE)
 DONE_RE = re.compile(r"✅|☑|ERLEDIGT|ABGESCHLOSSEN|\bDONE\b", re.IGNORECASE)
@@ -158,6 +159,8 @@ def status_text(payload: dict) -> str:
             extras.append(f"spec: {wo['spec_anchor']}")
         if steps_total:
             extras.append(f"{steps_done}/{steps_total} steps")
+        if wo.get("ready_to_close"):
+            extras.append("💡 ready to close: all symbols wired")
         suffix = f"  [{', '.join(extras)}]" if extras else ""
         lines.append(f"  {mark} WO {wo['wo']:>2}  {wo['title']}{suffix}")
         for step in steps:
@@ -174,8 +177,43 @@ def status_text(payload: dict) -> str:
     return "\n".join(lines)
 
 
-def status(conn: sqlite3.Connection, limit: int = 30, max_chars: int = 8000) -> str:
+def _infer_root(conn: sqlite3.Connection) -> Path | None:
+    """Resolve the project root from the SQLite connection path (`.atlas/index.sqlite`)."""
+    try:
+        rows = conn.execute("PRAGMA database_list").fetchall()
+        for row in rows:
+            db_file = row[2] if len(row) > 2 else ""
+            if db_file and db_file != ":memory:":
+                p = Path(db_file)
+                if p.parent.name in {".atlas", ".gdd"} and p.parent.parent.exists():
+                    return p.parent.parent
+    except Exception:
+        pass
+    return None
+
+
+def status(
+    conn: sqlite3.Connection,
+    limit: int = 30,
+    max_chars: int = 8000,
+    root: Path | None = None,
+) -> str:
     work_orders = extract_work_orders(conn)
+    proj_root = root or _infer_root(conn)
+    if proj_root is not None:
+        from . import verify
+
+        sym_map = verify.load_wo_symbols(proj_root)
+        for item in work_orders:
+            if item["status"] != "open":
+                continue
+            recorded = sym_map.get(int(item["wo"]), [])
+            if not recorded:
+                continue
+            steps_ok = item.get("steps_done", 0) == item.get("steps_total", 0)
+            if steps_ok and verify.check(proj_root, recorded).get("ok"):
+                item["ready_to_close"] = True
+
     counts = {"done": 0, "open": 0, "unknown": 0}
     for item in work_orders:
         counts[item["status"]] += 1

@@ -20,7 +20,9 @@ from __future__ import annotations
 import json
 import sqlite3
 
-from . import search as search_mod
+from pathlib import Path
+
+from . import bootstrap, code as code_mod, search as search_mod
 
 CHARS_PER_TOKEN = 4
 
@@ -60,8 +62,81 @@ def auto_questions(conn: sqlite3.Connection, limit: int = 8) -> list[str]:
     return questions
 
 
+def measure_code(root, sample: int = 8) -> dict:
+    """Compare reading full source files against `atlas_code_find` for the largest symbols in the repo."""
+    if not root:
+        return {"files": 0, "codebase_tokens": 0, "rows": [], "naive_total": 0, "atlas_total": 0, "saved": 0.0}
+    root_path = Path(root)
+    if not root_path.exists():
+        return {"files": 0, "codebase_tokens": 0, "rows": [], "naive_total": 0, "atlas_total": 0, "saved": 0.0}
+
+    candidates: list[dict] = []
+    total_files = 0
+    codebase_tokens = 0
+    for path in sorted(bootstrap.iter_source_files(root_path)):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        total_files += 1
+        file_tok = _tokens(text)
+        codebase_tokens += file_tok
+        rel = path.relative_to(root_path).as_posix()
+        lines = text.splitlines()
+        for name, start, _def_line in bootstrap._iter_defs(text):
+            if len(name) < 4:
+                continue
+            body_len = bootstrap._func_body_end(lines, start) - start + 1
+            candidates.append({
+                "symbol": name,
+                "path": rel,
+                "file_tokens": file_tok,
+                "lines": body_len,
+            })
+
+    # Pick symbols from the largest files first (and largest functions within them), deduplicated by symbol name
+    candidates.sort(key=lambda item: (-item["file_tokens"], -item["lines"]))
+    picked: list[dict] = []
+    seen: set[str] = set()
+    for item in candidates:
+        if item["symbol"] in seen:
+            continue
+        seen.add(item["symbol"])
+        picked.append(item)
+        if len(picked) >= sample:
+            break
+
+    rows: list[dict] = []
+    naive_total = 0
+    atlas_total = 0
+    for item in picked:
+        rendered = code_mod.render(root_path, item["symbol"], limit=5, with_usage=True)
+        cost = _tokens(rendered)
+        # Naive baseline: reading the defining file (or at minimum the codebase if multi-file caller check)
+        naive = max(item["file_tokens"], cost)
+        naive_total += naive
+        atlas_total += cost
+        rows.append({
+            "symbol": item["symbol"],
+            "path": item["path"],
+            "naive": naive,
+            "atlas": cost,
+            "saved": round(1 - cost / naive, 3) if naive else 0.0,
+        })
+
+    return {
+        "files": total_files,
+        "codebase_tokens": codebase_tokens,
+        "symbols": len(rows),
+        "naive_total": naive_total,
+        "atlas_total": atlas_total,
+        "saved": round(1 - atlas_total / naive_total, 3) if naive_total else 0.0,
+        "rows": rows,
+    }
+
+
 def measure(root, conn, questions: list[str] | None = None, sample: int = 8) -> dict:
-    """Compare the naive full-read path against the indexed path for each question."""
+    """Compare the naive full-read path against the indexed path for each question (and code symbols)."""
     baseline, docs = document_tokens(conn)
     generated = questions is None
     queries = (questions or auto_questions(conn, limit=sample)) or []
@@ -95,6 +170,7 @@ def measure(root, conn, questions: list[str] | None = None, sample: int = 8) -> 
         })
 
     answered = len(rows) - missed
+    code_report = measure_code(root, sample=sample)
     return {
         "documents": docs,
         "baseline_tokens": baseline,
@@ -105,6 +181,7 @@ def measure(root, conn, questions: list[str] | None = None, sample: int = 8) -> 
         "atlas_total": atlas_total,
         "saved": round(1 - atlas_total / naive_total, 3) if naive_total else 0.0,
         "rows": rows,
+        "code": code_report,
         "generated_questions": generated,
         "caveat": (
             "Questions were derived from section headings, so each one contains "
@@ -146,4 +223,29 @@ def render(payload: dict, limit: int = 12) -> str:
     ]
     if payload["caveat"]:
         lines += ["", payload["caveat"]]
+
+    code_data = payload.get("code") or {}
+    code_rows = code_data.get("rows") or []
+    if code_rows:
+        lines += [
+            "",
+            f"Code files: {code_data.get('files', 0)} (~{code_data.get('codebase_tokens', 0):,} tokens) "
+            "· Symbol lookup (`atlas_code_find` vs. file read)",
+            "",
+            f"{'Symbol (path)':<46} {'file':>9} {'atlas':>7} {'saved':>7}",
+            "-" * 72,
+        ]
+        for crow in code_rows[:limit]:
+            label = f"{crow['symbol']} ({crow['path']})"
+            if len(label) > 44:
+                label = label[:41] + "..."
+            lines.append(
+                f"{label:<46} {crow['naive']:>9,} {crow['atlas']:>7,} "
+                f"{crow['saved'] * 100:>6.0f}%"
+            )
+        lines += [
+            "-" * 72,
+            f"{'Code Total':<46} {code_data['naive_total']:>9,} {code_data['atlas_total']:>7,} "
+            f"{code_data['saved'] * 100:>6.0f}%",
+        ]
     return "\n".join(lines)

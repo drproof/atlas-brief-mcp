@@ -939,23 +939,33 @@ def atlas_code_find(
             ),
         ),
     ] = False,
+    include_body: Annotated[
+        bool,
+        Field(
+            default=False,
+            description=(
+                "If true, also extract and return the function or class body (lines start..end, capped at 80 lines) "
+                "so you can inspect the implementation without opening the full source file with Read (default false)."
+            ),
+        ),
+    ] = False,
 ) -> str:
-    """Locate function or class definitions across the codebase (file, line, signature) and optionally inspect call sites.
+    """Locate function or class definitions across the codebase (file, line, signature, and optional body) and inspect call sites.
 
     Use this tool BEFORE reading source files to find where a symbol lives (~30 tokens per signature vs.
-    thousands of tokens for a full file) or set `usage=True` to check if a symbol is actually called before
-    marking a task done. Supports GDScript (`.gd`/`.tscn`), Python, TypeScript/JavaScript, Rust, C#, Go,
-    Java, Kotlin, and Swift.
+    thousands of tokens for a full file), set `include_body=True` to read just that function's implementation,
+    or set `usage=True` to check if a symbol is actually called before marking a task done. Supports GDScript
+    (`.gd`/`.tscn`), Python, TypeScript/JavaScript, Rust, C#, Go, Java, Kotlin, and Swift.
 
     Behavior & Output:
     - Read-only static scan of project source files; ignores build directories and `.atlas/`.
-    - Returns a formatted summary of matching definitions (`path:line — signature`) and, when `usage=True`,
-      the caller/reference count and file:line call sites for each symbol.
+    - Returns a formatted summary of matching definitions (`path:line — signature`), optional function body,
+      and, when `usage=True`, the caller/reference count and file:line call sites for each symbol.
     """
     root, _ = _fresh()
     from . import code as code_mod
 
-    return code_mod.render(root, symbol, limit=limit, with_usage=usage)
+    return code_mod.render(root, symbol, limit=limit, with_usage=usage, include_body=include_body)
 
 
 @mcp.tool(

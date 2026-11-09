@@ -314,3 +314,30 @@ def test_finds_all_nine_advertised_languages_and_checks_wiring(tmp_path):
         else:
             assert refs["ref_count"] == 0, f"Expected 0 refs for unwired {sym}, got {refs}"
 
+
+def test_find_and_render_with_include_body(tmp_path):
+    """`include_body=True` extracts only the function's lines (`line..end_line`) without reading the whole file."""
+    root = tmp_path / "pybody"
+    (root / "src").mkdir(parents=True)
+    (root / "src" / "calc.py").write_text(
+        "def helper_one(a: int) -> int:\n"
+        "    step = a + 10\n"
+        "    return step * 2\n\n"
+        "def helper_two(b: int) -> int:\n"
+        "    return b - 1\n",
+        encoding="utf-8",
+    )
+
+    hits = code.find(root, "helper_one", include_body=True)
+    assert len(hits) == 1
+    assert hits[0]["line"] == 1
+    assert hits[0]["end_line"] == 3
+    assert "step = a + 10" in hits[0]["body"]
+    assert "helper_two" not in hits[0]["body"]
+
+    rendered = code.render(root, "helper_one", include_body=True)
+    assert "src/calc.py:1-3" in rendered
+    assert "step = a + 10" in rendered
+    assert "helper_two" not in rendered
+
+

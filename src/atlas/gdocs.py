@@ -304,6 +304,40 @@ def _frontmatter(meta: dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
+_WO_LINE_RE = re.compile(
+    r"^[ \t>*#-]*Work\s*Order\s*(?P<wo>\d+)\s*(?:—|–|-|:)\s*(?:✅|⬜|☑|☐|🚧).*$",
+    re.IGNORECASE | re.MULTILINE,
+)
+
+
+def _rescue_cached_work_orders(root: Path, filename: str, new_body: str) -> str:
+    """Preserve Work Order status lines from existing `.atlas/cache` or `.gdd/cache` files if missing from `new_body`."""
+    from .config import CACHE_DIR, LEGACY_CACHE_DIR
+
+    present_wos = {int(m.group("wo")) for m in _WO_LINE_RE.finditer(new_body)}
+    rescued_lines: list[tuple[int, str]] = []
+
+    for cdir in (root / CACHE_DIR / "cache", root / LEGACY_CACHE_DIR / "cache"):
+        candidate = cdir / filename
+        if not candidate.exists():
+            continue
+        try:
+            old_text = candidate.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for match in _WO_LINE_RE.finditer(old_text):
+            wo_num = int(match.group("wo"))
+            if wo_num not in present_wos:
+                present_wos.add(wo_num)
+                rescued_lines.append((wo_num, match.group(0).strip()))
+
+    if not rescued_lines:
+        return new_body
+
+    rescued_block = "\n".join(line for _, line in sorted(rescued_lines))
+    return f"{new_body.rstrip()}\n\n{rescued_block}\n"
+
+
 def _cache_path(root: Path, name: str) -> Path:
     cache = cache_dir(root) / "cache"
     cache.mkdir(parents=True, exist_ok=True)
@@ -522,6 +556,8 @@ def sync(
             "tags": "[atlas, gdrive]",
         })
         path = _cache_path(root, name)
+        if kind == "doc":
+            body = _rescue_cached_work_orders(root, path.name, body)
         path.write_text(f"{header}\n\n{body.strip()}\n", encoding="utf-8")
 
         if conn is not None:

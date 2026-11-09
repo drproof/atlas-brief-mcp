@@ -100,7 +100,7 @@ CREATE INDEX IF NOT EXISTS idx_tasks_anchor ON tasks(anchor);
 CREATE INDEX IF NOT EXISTS idx_tasks_path ON tasks(path);
 """
 
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
 
 # Everything regenerable from the source files. Dropped and rebuilt on a
 # schema version bump — Markdown remains the source of truth. `sync_state` is

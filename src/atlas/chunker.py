@@ -117,8 +117,12 @@ def _split_body(body: str, max_chars: int) -> list[str]:
             parts.append(current)
         rest = para
         while len(rest) > max_chars:
-            cut = rest.rfind(" ", 0, max_chars)
-            if cut < max_chars * 0.5:
+            # Prefer splitting on a line break so single-newline lists (such as
+            # Work Order logs) are never sliced in the middle of a status line.
+            cut = rest.rfind("\n", 0, max_chars)
+            if cut < max_chars * 0.3:
+                cut = rest.rfind(" ", 0, max_chars)
+            if cut < max_chars * 0.3:
                 cut = max_chars
             parts.append(rest[:cut].strip())
             rest = rest[cut:].strip()

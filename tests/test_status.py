@@ -91,3 +91,76 @@ def test_freshness_recovers_from_legacy_gdd_cache(tmp_path):
     assert "no Google source synced" not in note
     assert "2026-11-09T16:00:00+00:00" in note
 
+
+def test_long_single_newline_work_order_list_does_not_slice_wo_18_or_25():
+    """Regression test: a 27-entry Work Order list separated by single newlines
+    exceeds MAX_CHARS=1500 around WO 18 and 3000 around WO 25. `_split_body` must
+    split on newlines rather than slicing a Work Order status line on a space."""
+    from atlas.chunker import chunk
+
+    lines = ["# Milestone Plan", ""]
+    for i in range(1, 28):
+        lines.append(
+            f"* **Work Order {i} — ✅ ERLEDIGT (Feature Module Number {i} With Description):** "
+            f"Implemented system component {i} with full test coverage."
+        )
+    doc = chunk("\n".join(lines), "gdd", "gdd.md")
+    assert len(doc.sections) >= 2
+
+    conn = _conn([(s.anchor, s.heading, s.body) for s in doc.sections])
+    items = extract_work_orders(conn)
+    found_numbers = [item["wo"] for item in items]
+    assert found_numbers == list(range(1, 28))
+
+
+def test_real_wo_1_overrides_architecture_boilerplate_wo_1():
+    """`Work Order 1 — ⬜ OPEN (Complete the architecture doc)` from `atlas init`
+    must never shadow the real Work Order 1 from a synced GDD."""
+    conn = _conn([
+        (
+            "architecture#3-work-orders",
+            "3. Work Orders",
+            "Work Order 1 — ⬜ OPEN (Complete the architecture doc): fill in the TODO blocks.",
+        ),
+        (
+            "gdd#work-orders",
+            "Work Orders",
+            "Work Order 1 — ✅ DONE (Core Unit, Tri-Color AP, Vor-HP-Rüstung & Fokus): Implemented.",
+        ),
+    ])
+    items = extract_work_orders(conn)
+    assert len(items) == 1
+    assert items[0]["wo"] == 1
+    assert items[0]["status"] == "done"
+    assert items[0]["title"] == "Core Unit, Tri-Color AP, Vor-HP-Rüstung & Fokus"
+
+
+def test_localwrite_targets_excludes_sync_cache_and_rescues_cached_wos(tmp_path):
+    from atlas import gdocs, localwrite
+
+    (tmp_path / "docs").mkdir()
+    arch = tmp_path / "docs" / "ARCHITECTURE.md"
+    arch.write_text("# Arch\n\n## 3. Work Orders\n", encoding="utf-8")
+
+    cache_dir = tmp_path / ".atlas" / "cache"
+    cache_dir.mkdir(parents=True)
+    cached_file = cache_dir / "master-gdd.md"
+    cached_file.write_text(
+        "# GDD\n\nWork Order 19 — ✅ DONE (Heldenquests): Done.\n"
+        "Work Order 20 — ✅ DONE (Camp-Dialoge): Done.\n",
+        encoding="utf-8",
+    )
+
+    target_paths = localwrite.targets(tmp_path)
+    assert cached_file not in target_paths
+    assert arch in target_paths
+
+    merged = gdocs._rescue_cached_work_orders(
+        tmp_path,
+        "master-gdd.md",
+        "# GDD\n\nWork Order 1 — ✅ DONE (Core Unit): Done.\n",
+    )
+    assert "Work Order 19 — ✅ DONE (Heldenquests)" in merged
+    assert "Work Order 20 — ✅ DONE (Camp-Dialoge)" in merged
+
+

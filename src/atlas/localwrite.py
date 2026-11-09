@@ -37,12 +37,22 @@ def _line_re(wo: int) -> re.Pattern:
     )
 
 
+def _is_sync_cache_file(path: Path) -> bool:
+    """Return True if `path` lives inside `.atlas/cache/` or `.gdd/cache/`."""
+    from .config import CACHE_DIR, LEGACY_CACHE_DIR
+
+    return (
+        path.parent.name == "cache"
+        and path.parent.parent.name in {CACHE_DIR, LEGACY_CACHE_DIR}
+    )
+
+
 def targets(root: Path) -> list[Path]:
     """Return local documentation files that may contain work orders.
 
-    Order: files managed by `atlas init` first, followed by all other Markdown
-    files in the project. The list is kept small — only files that actually
-    contain a work order line are modified.
+    Order: files managed by `atlas init` first, followed by all other local
+    Markdown files in the project (excluding `.atlas/cache/` and `.gdd/cache/`,
+    which are overwritten on Google Docs sync).
     """
     from . import bootstrap
     from .config import discover
@@ -51,10 +61,10 @@ def targets(root: Path) -> list[Path]:
     managed = bootstrap.load_managed(root) or set()
     for rel in sorted(managed):
         path = root / rel
-        if path.exists():
+        if path.exists() and not _is_sync_cache_file(path):
             seen.append(path)
     for path in discover(root):
-        if path not in seen:
+        if path not in seen and not _is_sync_cache_file(path):
             seen.append(path)
     return seen
 

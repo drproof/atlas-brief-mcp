@@ -32,6 +32,19 @@ def _title(line: str, pos: int) -> str:
     return rest.split("**")[0].strip(" *:")[:90]
 
 
+_BOILERPLATE_WO1_TITLES = {
+    "complete the architecture doc",
+    "architekturdokument vervollständigen",
+}
+
+
+def _is_boilerplate_wo(entry: dict) -> bool:
+    return (
+        entry.get("wo") == 1
+        and (entry.get("title") or "").strip().casefold() in _BOILERPLATE_WO1_TITLES
+    )
+
+
 def extract_work_orders(conn: sqlite3.Connection) -> list[dict]:
     """Find 'Work Order N' entries along with their status, spec anchor, steps, and symbols.
 
@@ -52,8 +65,6 @@ def extract_work_orders(conn: sqlite3.Connection) -> list[dict]:
             if not match:
                 continue
             number = int(match.group(1))
-            if number in items:
-                continue
 
             # Status marker must immediately follow the work order number (or appear
             # before the colon `:` when a longer title precedes the marker).
@@ -70,6 +81,16 @@ def extract_work_orders(conn: sqlite3.Connection) -> list[dict]:
                 continue
 
             status = "done" if done and not open_ else ("open" if open_ else "unknown")
+            candidate_title = _title(line, match.end())
+
+            if number in items:
+                existing = items[number]
+                # A real Work Order 1 (e.g. from a synced Google Doc) always
+                # overrides the untouched `atlas init` skeleton placeholder.
+                if _is_boilerplate_wo(existing) and candidate_title.strip().casefold() not in _BOILERPLATE_WO1_TITLES:
+                    pass
+                else:
+                    continue
 
             # Collect lines belonging to this Work Order until the next Work Order or heading.
             block_lines: list[str] = [line]

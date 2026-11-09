@@ -32,28 +32,42 @@ def symbols_path(root) -> Path:
 
 def load_wo_symbols(root) -> dict[int, list[str]]:
     """Return `{8: ['_dispatch_unit_class_skill'], 12: [...]}` — missing file = empty dict."""
-    path = symbols_path(root)
-    if not path.exists():
+    from .config import CACHE_DIR, LEGACY_CACHE_DIR
+
+    root_path = Path(root)
+    candidates = [
+        root_path / LEGACY_CACHE_DIR / SYMBOLS_FILE,
+        root_path / CACHE_DIR / SYMBOLS_FILE,
+    ]
+    existing_paths = [p for p in candidates if p.exists()]
+    if not existing_paths:
         return {}
     try:
         import yaml
     except ImportError:  # pragma: no cover
         return {}
-    try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    except Exception:
-        return {}
 
     mapping: dict[int, list[str]] = {}
-    for key, value in data.items():
+    for path in existing_paths:
         try:
-            wo = int(key)
-        except (TypeError, ValueError):
+            data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except Exception:
             continue
-        if isinstance(value, str):
-            mapping[wo] = [value]
-        elif isinstance(value, list):
-            mapping[wo] = [str(item) for item in value if str(item).strip()]
+        if not isinstance(data, dict):
+            continue
+        for key, value in data.items():
+            try:
+                wo = int(key)
+            except (TypeError, ValueError):
+                continue
+            items: list[str] = []
+            if isinstance(value, str):
+                items = [value]
+            elif isinstance(value, list):
+                items = [str(item) for item in value if str(item).strip()]
+            if items:
+                prior = mapping.get(wo, [])
+                mapping[wo] = list(dict.fromkeys(prior + items))
     return mapping
 
 

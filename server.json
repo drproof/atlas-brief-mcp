@@ -6,12 +6,12 @@
     "url": "https://github.com/drproof/atlas-brief-mcp",
     "source": "github"
   },
-  "version": "0.3.8",
+  "version": "0.3.9",
   "packages": [
     {
       "registryType": "pypi",
       "identifier": "atlas-brief-mcp",
-      "version": "0.3.8",
+      "version": "0.3.9",
       "transport": {
         "type": "stdio"
       },

@@ -48,15 +48,23 @@ def log(root, tool: str, **fields) -> Path:
 
 
 def tail(root, limit: int = 20) -> list[dict]:
-    path = log_path(root)
-    if not path.exists():
+    from .config import CACHE_DIR, LEGACY_CACHE_DIR
+
+    root_path = Path(root)
+    paths = [
+        p for p in (root_path / LEGACY_CACHE_DIR / LOG_NAME, root_path / CACHE_DIR / LOG_NAME)
+        if p.exists()
+    ]
+    if not paths:
         return []
-    try:
-        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
-    except OSError:
-        return []
+    raw_lines: list[str] = []
+    for path in paths:
+        try:
+            raw_lines.extend(path.read_text(encoding="utf-8", errors="replace").splitlines())
+        except OSError:
+            continue
     entries: list[dict] = []
-    for line in lines[-limit:]:
+    for line in raw_lines[-limit:] if limit > 0 else raw_lines:
         try:
             value = json.loads(line)
         except json.JSONDecodeError:

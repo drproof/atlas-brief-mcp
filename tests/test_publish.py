@@ -352,3 +352,18 @@ def test_hybrid_set_status_updates_local_when_gdocs_bound(monkeypatch, tmp_path)
     assert result["verified"] is True
     assert "✅ DONE" in arch.read_text(encoding="utf-8")
 
+
+def test_publish_default_section_falls_back_to_prototyp_meilenstein_plan():
+    """When `section` is the default ('Work Orders'), `publish` must automatically
+    find '3. Prototyp-Meilenstein-Plan' in German Google Docs."""
+    body = _doc()["body"]
+    index = None
+    heading = None
+    for sec in publish.FALLBACK_SECTIONS:
+        index, heading = find_insert_index(body, sec)
+        if index is not None:
+            break
+    assert index == 149
+    assert "Prototyp-Meilenstein-Plan" in heading
+
+

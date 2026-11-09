@@ -61,76 +61,82 @@ def extract_work_orders(conn: sqlite3.Connection) -> list[dict]:
         heading_line = (row["heading"] or "").strip()
         lines = ([heading_line] if heading_line else []) + row["body"].splitlines()
         for index, line in enumerate(lines):
-            match = WO_RE.search(line)
-            if not match:
-                continue
-            number = int(match.group(1))
-
-            # Status marker must immediately follow the work order number (or appear
-            # before the colon `:` when a longer title precedes the marker).
-            window = line[match.end(): match.end() + 40]
-            done = bool(DONE_RE.search(window))
-            open_ = bool(OPEN_RE.search(window))
-            if not (done or open_):
-                leading = line[: match.start()]
-                if re.match(r"^[\s#*>\-_0-9.)]*$", leading):
-                    pre_colon = line[match.end():].split(":", 1)[0][:120]
-                    done = bool(DONE_RE.search(pre_colon))
-                    open_ = bool(OPEN_RE.search(pre_colon))
-            if not (done or open_):
+            matches = list(WO_RE.finditer(line))
+            if not matches:
                 continue
 
-            status = "done" if done and not open_ else ("open" if open_ else "unknown")
-            candidate_title = _title(line, match.end())
+            for m_idx, match in enumerate(matches):
+                number = int(match.group(1))
+                seg_end = matches[m_idx + 1].start() if m_idx + 1 < len(matches) else len(line)
+                segment = line[match.start(): seg_end]
+                rel_end = match.end() - match.start()
 
-            if number in items:
-                existing = items[number]
-                # A real Work Order 1 (e.g. from a synced Google Doc) always
-                # overrides the untouched `atlas init` skeleton placeholder.
-                if _is_boilerplate_wo(existing) and candidate_title.strip().casefold() not in _BOILERPLATE_WO1_TITLES:
-                    pass
-                else:
+                # Status marker must immediately follow the work order number (or appear
+                # before the colon `:` when a longer title precedes the marker).
+                window = segment[rel_end: rel_end + 40]
+                done = bool(DONE_RE.search(window))
+                open_ = bool(OPEN_RE.search(window))
+                if not (done or open_):
+                    leading = line[: match.start()] if m_idx == 0 else ""
+                    if m_idx > 0 or re.match(r"^[\s#*>\-_0-9.)]*$", leading):
+                        pre_colon = segment[rel_end:].split(":", 1)[0][:120]
+                        done = bool(DONE_RE.search(pre_colon))
+                        open_ = bool(OPEN_RE.search(pre_colon))
+                if not (done or open_):
                     continue
 
-            # Collect lines belonging to this Work Order until the next Work Order or heading.
-            block_lines: list[str] = [line]
-            steps: list[dict] = []
-            for follow in lines[index + 1:]:
-                stripped = follow.strip()
-                if stripped.startswith("#") or WO_RE.search(follow):
-                    break
-                block_lines.append(follow)
-                step_match = STEP_LINE_RE.match(follow)
-                if step_match:
-                    steps.append({
-                        "text": step_match.group("text").strip(),
-                        "done": step_match.group("mark").lower() == "x",
-                    })
+                status = "done" if done and not open_ else ("open" if open_ else "unknown")
+                candidate_title = _title(segment, rel_end)
 
-            context = "\n".join(block_lines[:12])
-            spec_match = SPEC_ANCHOR_RE.search(context)
-            spec_anchor = spec_match.group(1) if spec_match else ""
+                if number in items:
+                    existing = items[number]
+                    # A real Work Order 1 (e.g. from a synced Google Doc) always
+                    # overrides the untouched `atlas init` skeleton placeholder.
+                    if _is_boilerplate_wo(existing) and candidate_title.strip().casefold() not in _BOILERPLATE_WO1_TITLES:
+                        pass
+                    else:
+                        continue
 
-            symbols: list[str] = []
-            for symbol in SYMBOL_RE.findall(context):
-                if symbol not in symbols:
-                    symbols.append(symbol)
+                # Collect lines belonging to this Work Order until the next Work Order or heading.
+                block_lines: list[str] = [segment]
+                steps: list[dict] = []
+                if m_idx == len(matches) - 1:
+                    for follow in lines[index + 1:]:
+                        stripped = follow.strip()
+                        if stripped.startswith("#") or WO_RE.search(follow):
+                            break
+                        block_lines.append(follow)
+                        step_match = STEP_LINE_RE.match(follow)
+                        if step_match:
+                            steps.append({
+                                "text": step_match.group("text").strip(),
+                                "done": step_match.group("mark").lower() == "x",
+                            })
 
-            entry: dict = {
-                "wo": number,
-                "status": status,
-                "title": _title(line, match.end()),
-                "symbols": symbols[:6],
-                "anchor": row["anchor"],
-                "heading": row["heading"],
-            }
-            if spec_anchor:
-                entry["spec_anchor"] = spec_anchor
-            if steps:
-                entry["steps"] = steps
-                entry["steps_done"] = sum(1 for s in steps if s["done"])
-                entry["steps_total"] = len(steps)
-            items[number] = entry
+                context = "\n".join(block_lines[:12])
+                spec_match = SPEC_ANCHOR_RE.search(context)
+                spec_anchor = spec_match.group(1) if spec_match else ""
+
+                symbols: list[str] = []
+                for symbol in SYMBOL_RE.findall(context):
+                    if symbol not in symbols:
+                        symbols.append(symbol)
+
+                entry: dict = {
+                    "wo": number,
+                    "status": status,
+                    "title": candidate_title,
+                    "symbols": symbols[:6],
+                    "anchor": row["anchor"],
+                    "heading": row["heading"],
+                }
+                if spec_anchor:
+                    entry["spec_anchor"] = spec_anchor
+                if steps:
+                    entry["steps"] = steps
+                    entry["steps_done"] = sum(1 for s in steps if s["done"])
+                    entry["steps_total"] = len(steps)
+                items[number] = entry
     return [items[key] for key in sorted(items)]
 
 
@@ -206,6 +212,15 @@ def status_text(payload: dict) -> str:
     if payload.get("truncated"):
         lines.append(f"  … truncated ({payload.get('returned')} of "
                      f"{counts['total']}) — `--json` returns all.")
+    unindexed = payload.get("unindexed_work_orders") or []
+    if unindexed:
+        lines.append("")
+        lines.append("Recorded in audit log / wo-symbols.yml (not yet in document):")
+        for uwo in unindexed:
+            syms = ", ".join(uwo.get("symbols") or [])
+            sym_note = f"  [symbols: {syms}]" if syms else ""
+            title = uwo.get("title") or "(title not recorded in log)"
+            lines.append(f"  ⚠️ WO {uwo['wo']:>2}  {title} ({uwo.get('status', 'done')}){sym_note}")
     lines.append("")
     lines.append(f"Open checkbox tasks: {payload['open_tasks']} · "
                  f"Documents: {payload['docs']}")
@@ -229,6 +244,41 @@ def _infer_root(conn: sqlite3.Connection) -> Path | None:
     return None
 
 
+def _recover_unindexed_work_orders(proj_root: Path, indexed_wos: set[int]) -> list[dict]:
+    """Find Work Orders recorded in `mutations.log` or `wo-symbols.yml` that are missing from the document index."""
+    from . import audit, verify
+
+    sym_map = verify.load_wo_symbols(proj_root)
+    log_entries = audit.tail(proj_root, limit=0)
+
+    by_wo: dict[int, dict] = {}
+    for entry in log_entries:
+        if entry.get("refused") or entry.get("verified") is False:
+            continue
+        raw_wo = entry.get("wo")
+        if raw_wo is None:
+            continue
+        try:
+            wo_num = int(raw_wo)
+        except (TypeError, ValueError):
+            continue
+        if wo_num in indexed_wos:
+            continue
+        rec = by_wo.setdefault(wo_num, {"wo": wo_num, "status": "done", "title": "", "symbols": []})
+        if entry.get("status"):
+            rec["status"] = str(entry["status"]).lower()
+        if entry.get("title"):
+            rec["title"] = str(entry["title"]).strip()
+
+    for wo_num, syms in sym_map.items():
+        if wo_num in indexed_wos:
+            continue
+        rec = by_wo.setdefault(wo_num, {"wo": wo_num, "status": "done", "title": "", "symbols": []})
+        rec["symbols"] = list(dict.fromkeys(rec["symbols"] + syms))
+
+    return [by_wo[k] for k in sorted(by_wo)]
+
+
 def status(
     conn: sqlite3.Connection,
     limit: int = 30,
@@ -237,6 +287,7 @@ def status(
 ) -> str:
     work_orders = extract_work_orders(conn)
     proj_root = root or _infer_root(conn)
+    unindexed: list[dict] = []
     if proj_root is not None:
         from . import verify
 
@@ -250,6 +301,9 @@ def status(
             steps_ok = item.get("steps_done", 0) == item.get("steps_total", 0)
             if steps_ok and verify.check(proj_root, recorded).get("ok"):
                 item["ready_to_close"] = True
+        unindexed = _recover_unindexed_work_orders(
+            proj_root, {int(item["wo"]) for item in work_orders}
+        )
 
     counts = {"done": 0, "open": 0, "unknown": 0}
     for item in work_orders:
@@ -270,6 +324,8 @@ def status(
         "last_sync": last_sync,
         "freshness": fresh_note,
     }
+    if unindexed:
+        payload["unindexed_work_orders"] = unindexed
 
     text = json.dumps(payload, ensure_ascii=False)
     if len(text) <= max_chars:

@@ -20,6 +20,15 @@ from pathlib import Path
 from . import audit, gdocs, verify
 
 DEFAULT_SECTION = "Work Orders"
+FALLBACK_SECTIONS = (
+    "Work Orders",
+    "Prototyp-Meilenstein-Plan",
+    "Prototype Milestone Plan",
+    "Meilenstein-Plan",
+    "Milestone Plan",
+    "Meilensteine",
+    "Milestones",
+)
 
 
 def format_line(wo: int, status: str, title: str, description: str = "") -> str:
@@ -214,6 +223,54 @@ def find_insert_index(body: dict, needle: str):
     return max(1, max(ends) - 1), _paragraph_text(content[start]).strip()
 
 
+_ANY_WO_STATUS_RE = re.compile(
+    r"Work\s*Order\s*\d+\s*(?:—|–|-|:)\s*(?:✅|⬜|☑|☐|🚧)",
+    re.IGNORECASE,
+)
+
+
+def _find_wo_section_in_body(body: dict):
+    """Locate the section that already contains Work Order status lines when the heading uses a custom title."""
+    content = (body or {}).get("content") or []
+    if not content:
+        return None, None
+
+    last_heading_idx = None
+    last_heading_level = 99
+    target_heading_idx = None
+    target_ref_level = 99
+
+    for index, element in enumerate(content):
+        style = _paragraph_style(element)
+        text = _paragraph_text(element)
+        if style.startswith("HEADING"):
+            last_heading_idx = index
+            last_heading_level = _level(style)
+        if _ANY_WO_STATUS_RE.search(text):
+            target_heading_idx = last_heading_idx
+            target_ref_level = last_heading_level
+            break
+
+    if target_heading_idx is None:
+        return None, None
+
+    heading_text = _paragraph_text(content[target_heading_idx]).strip()
+    for index in range(target_heading_idx + 1, len(content)):
+        style = _paragraph_style(content[index])
+        if style.startswith("HEADING") and _level(style) <= target_ref_level:
+            previous = content[index - 1] if index > 0 else None
+            end = (previous or {}).get("endIndex")
+            if end is None:
+                end = content[index].get("startIndex", 1)
+            return max(1, end - 1), heading_text
+
+    ends = [el.get("endIndex") for el in content[target_heading_idx:] if el.get("endIndex")]
+    if not ends:
+        return None, None
+    return max(1, max(ends) - 1), heading_text
+
+
+
 def _tab_text_of(docs, document_id: str, tab_id: str = "") -> str:
     """Read the text of the target tab directly from the Docs API, not the export."""
     try:
@@ -393,15 +450,33 @@ def publish(
         except Exception as error:
             raise gdocs.SyncError(gdocs._explain(error)) from error
 
+        candidate_sections = (
+            list(dict.fromkeys([section, *FALLBACK_SECTIONS]))
+            if section == DEFAULT_SECTION
+            else [section]
+        )
         for current_tab_id, current_title, tab_body in iter_tab_bodies(document):
-            index, found_heading = find_insert_index(tab_body, section)
-            if index is not None:
-                target = {"source": source, "document": document}
-                insert_index = index
-                heading = found_heading
-                tab_id = current_tab_id
-                tab_title = current_title
+            for sec_name in candidate_sections:
+                index, found_heading = find_insert_index(tab_body, sec_name)
+                if index is not None:
+                    target = {"source": source, "document": document}
+                    insert_index = index
+                    heading = found_heading
+                    tab_id = current_tab_id
+                    tab_title = current_title
+                    break
+            if target is not None:
                 break
+        if target is None and section == DEFAULT_SECTION:
+            for current_tab_id, current_title, tab_body in iter_tab_bodies(document):
+                index, found_heading = _find_wo_section_in_body(tab_body)
+                if index is not None:
+                    target = {"source": source, "document": document}
+                    insert_index = index
+                    heading = found_heading
+                    tab_id = current_tab_id
+                    tab_title = current_title
+                    break
         if target is not None:
             break
 
@@ -819,7 +894,7 @@ def _mirror_to_gdocs(root: Path, conn, wo: int, text_block: str, section: str) -
         return {"gdocs_synced": False, "gdocs_note": str(exc)}
 
     candidate_sections = list(dict.fromkeys([
-        section, DEFAULT_SECTION, "Milestone", "Meilenstein", "Prototyp"
+        section, *FALLBACK_SECTIONS
     ]))
     for source in sources:
         try:
@@ -851,6 +926,13 @@ def _mirror_to_gdocs(root: Path, conn, wo: int, text_block: str, section: str) -
                     break
             if insert_index is not None:
                 break
+        if insert_index is None:
+            for current_tab_id, _current_title, tab_body in iter_tab_bodies(document):
+                idx, _found_heading = _find_wo_section_in_body(tab_body)
+                if idx is not None:
+                    insert_index = idx
+                    tab_id = current_tab_id
+                    break
 
         if insert_index is None:
             continue

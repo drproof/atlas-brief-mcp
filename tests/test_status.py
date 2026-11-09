@@ -164,3 +164,47 @@ def test_localwrite_targets_excludes_sync_cache_and_rescues_cached_wos(tmp_path)
     assert "Work Order 20 — ✅ DONE (Camp-Dialoge)" in merged
 
 
+def test_glued_work_orders_on_same_line_are_both_extracted():
+    """If an earlier insert glued two Work Orders onto the same paragraph line,
+    both must be extracted with their own number, status, and title."""
+    conn = _conn([(
+        "gdd#plan",
+        "Prototyp-Meilenstein-Plan",
+        "* **Work Order 17 — ✅ ERLEDIGT (Kampf-KI):** Details.Work Order 18 — ✅ ERLEDIGT (Glued Order 18): More details.",
+    )])
+    items = extract_work_orders(conn)
+    assert [item["wo"] for item in items] == [17, 18]
+    assert items[0]["title"] == "Kampf-KI"
+    assert items[1]["title"] == "Glued Order 18"
+
+
+def test_status_surfaces_unindexed_work_orders_from_audit_and_symbols(tmp_path):
+    import json
+    from atlas import audit, verify
+    from atlas.indexer import open_index
+    from atlas.status import status, status_text
+
+    (tmp_path / "docs").mkdir()
+    (tmp_path / "docs" / "SPEC.md").write_text(
+        "# Plan\n\nWork Order 1 — ✅ DONE (Core Unit): Done.\n",
+        encoding="utf-8",
+    )
+    conn = open_index(tmp_path)
+
+    audit.log(tmp_path, "publish", wo=18, status="done", title="Recovered Title 18", verified=True)
+    verify.record_wo_symbols(tmp_path, 18, ["some_symbol_18"])
+    verify.record_wo_symbols(tmp_path, 25, ["some_symbol_25"])
+
+    payload = json.loads(status(conn, root=tmp_path))
+    unindexed = payload.get("unindexed_work_orders") or []
+    assert [u["wo"] for u in unindexed] == [18, 25]
+    assert unindexed[0]["title"] == "Recovered Title 18"
+    assert unindexed[0]["symbols"] == ["some_symbol_18"]
+
+    rendered = status_text(payload)
+    assert "WO 18  Recovered Title 18" in rendered
+    assert "some_symbol_18" in rendered
+    assert "WO 25" in rendered
+
+
+

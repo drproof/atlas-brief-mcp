@@ -83,8 +83,11 @@ def measure_code(root, sample: int = 8) -> dict:
         codebase_tokens += file_tok
         rel = path.relative_to(root_path).as_posix()
         lines = text.splitlines()
+        is_test_file = rel.startswith("tests/") or Path(rel).name.startswith("test_")
         for name, start, _def_line in bootstrap._iter_defs(text):
             if len(name) < 4:
+                continue
+            if is_test_file or name.startswith("test_") or name.startswith("Test") or name.endswith("_test"):
                 continue
             body_len = bootstrap._func_body_end(lines, start) - start + 1
             candidates.append({

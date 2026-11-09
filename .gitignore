@@ -30,3 +30,4 @@ Thumbs.db
 briefs/
 # Interne Design-Spec, entstanden am ersten Projekt: bleibt lokal
 docs/SPEC.md
+*.pyc

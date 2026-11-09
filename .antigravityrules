@@ -1,0 +1,12 @@
+# Atlas rules
+
+- **Documentation access is a tool call:** use the `atlas` MCP server
+  (`atlas_where`, `atlas_read`, `atlas_status`, `atlas_code_find`). Never grep
+  `.atlas/cache/` — the cache is overwritten on the next sync.
+- **`.atlas/` is off-limits to file tools.**
+- **Work order status is written by tool, not by editing:** `atlas_publish` for a
+  new order, `atlas_set_status` to tick an existing one off.
+- **No checkoff without green tests**, and pass `verify_symbols=[...]`: a symbol
+  that is defined but never called is not delivered.
+- **`✅` is a point-in-time acceptance.** A later regression becomes a new work
+  order, never a reopened old one.

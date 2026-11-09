@@ -1,0 +1,9 @@
+{{
+  "mcpServers": {{
+    "atlas": {{
+      "command": "atlas",
+      "args": ["serve"],
+      "env": {{"ATLAS_ROOT": "."}}
+    }}
+  }}
+}}

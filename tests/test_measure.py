@@ -130,3 +130,27 @@ def test_measure_includes_code_symbol_benchmark(small_project):
     assert "compute_critical_damage" in rendered
     assert "Code Total" in rendered
 
+
+def test_measure_code_ignores_test_functions(small_project):
+    """Test functions (`test_*` or inside `tests/`) must not crowd out production symbols in `atlas measure`."""
+    root, conn = small_project
+    (root / "tests").mkdir()
+    (root / "tests" / "test_giant.py").write_text(
+        ("# huge test file\n" * 400)
+        + "def test_something_huge():\n"
+        + "".join(f"    assert {i} == {i}\n" for i in range(20)),
+        encoding="utf-8",
+    )
+    (root / "src").mkdir()
+    (root / "src" / "app.py").write_text(
+        "def run_production_pipeline(x: int) -> int:\n"
+        "    return x + 1\n",
+        encoding="utf-8",
+    )
+
+    payload = measure.measure(root, conn, sample=5)
+    symbols = [r["symbol"] for r in payload["code"]["rows"]]
+    assert "run_production_pipeline" in symbols
+    assert "test_something_huge" not in symbols
+
+

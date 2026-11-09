@@ -324,11 +324,11 @@ atlas measure --questions my-questions.txt    # One question per line
 ## 🧪 Automated Tests
 
 ```bash
-uv run pytest -q                                           # 220 unit & integration tests (offline)
+uv run pytest -q                                           # 221 unit & integration tests (offline)
 uv run python scripts/smoke_mcp.py --root examples/demo    # End-to-end JSON-RPC MCP smoke test
 ```
 
-All 220 tests run completely offline. Every Google Docs & Sheets interaction is tested against deterministic fakes — including edge cases where the API swallows a write or lags on export.
+All 221 tests run completely offline. Every Google Docs & Sheets interaction is tested against deterministic fakes — including edge cases where the API swallows a write or lags on export.
 
 ## 📄 License
 

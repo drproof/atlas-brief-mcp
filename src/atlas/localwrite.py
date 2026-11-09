@@ -297,7 +297,7 @@ def publish(root: Path, conn, wo: int, line: str, section: str,
 
     indexer.index_file(conn, root, path)
     conn.commit()
-    audit.log(root, "publish", wo=wo, source="local",
+    audit.log(root, "publish", wo=wo, line=first_line, source="local",
               path=payload["path"], verified=verified)
     return payload
 

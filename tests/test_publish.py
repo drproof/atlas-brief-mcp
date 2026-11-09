@@ -367,3 +367,50 @@ def test_publish_default_section_falls_back_to_prototyp_meilenstein_plan():
     assert "Prototyp-Meilenstein-Plan" in heading
 
 
+def test_set_status_task_mirrors_to_gdocs_and_wo_close_flips_gdoc_steps(monkeypatch, tmp_path):
+    """Checking off a task updates both local ARCHITECTURE.md and the Google Doc,
+    and closing the WO flips any remaining `- [ ]` steps in the Google Doc."""
+    from atlas.indexer import open_index
+
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    arch = docs_dir / "ARCHITECTURE.md"
+    arch.write_text(
+        "# Architecture\n\n## 3. Work Orders\n\n"
+        "Work Order 34 — ⬜ OPEN (Save Fix):\n"
+        "- [x] Step alpha already checked locally\n",
+        encoding="utf-8",
+    )
+    conn = open_index(tmp_path)
+
+    fake = FakeDocs()
+    fake.tabs[0]["text"] = (
+        "Work Order 34 — ⬜ OPEN (Save Fix):\n"
+        "- [ ] Step alpha already checked locally\n"
+    )
+    monkeypatch.setattr(gdocs, "build_services", lambda creds: (None, None, fake))
+    monkeypatch.setattr(gdocs, "known_sources", lambda conn: [
+        {"id": "doc-1", "name": "Master GDD", "mimeType": gdocs.DOC_MIME}
+    ])
+    monkeypatch.setattr(gdocs, "assert_writable", lambda conn, file_id: None)
+    monkeypatch.setattr(gdocs, "sync", lambda *args, **kwargs: {"written": []})
+    monkeypatch.setattr(gdocs, "load_credentials", lambda **kwargs: object())
+
+    # 1. Task is already `[x]` locally, but `[ ]` in Google Docs -> mirrors `[x]` to Google Docs
+    res_task = publish.set_status(tmp_path, conn, status="done", task="Step alpha")
+    assert res_task["gdocs_task_synced"] is True
+    assert "- [x] Step alpha already checked locally" in fake.tabs[0]["text"]
+
+    # 2. Reset Google Doc step to `[ ]` to simulate lag, then close WO 34 -> passes gate and flips step + WO in Google Doc
+    fake.tabs[0]["text"] = (
+        "Work Order 34 — ⬜ OPEN (Save Fix):\n"
+        "- [ ] Step alpha already checked locally\n"
+    )
+    res_wo = publish.set_status(tmp_path, conn, wo=34, status="done")
+    assert res_wo["verified"] is True
+    assert "Work Order 34 — ✅ DONE" in fake.tabs[0]["text"]
+    assert "- [x] Step alpha already checked locally" in fake.tabs[0]["text"]
+    assert "Work Order 34 — ✅ DONE" in arch.read_text(encoding="utf-8")
+
+
+

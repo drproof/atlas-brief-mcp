@@ -599,6 +599,70 @@ def _status_line_re(wo: int):
                       re.IGNORECASE)
 
 
+def _mirror_task_to_gdocs(
+    root: Path,
+    conn,
+    task_query: str,
+    status: str,
+    client_secret: str | None = None,
+) -> dict:
+    """Best-effort mirror of a checkbox task toggle (`- [ ]` <-> `- [x]`) to bound Google Docs."""
+    if conn is None:
+        return {"gdocs_task_synced": False}
+    sources = [s for s in gdocs.known_sources(conn) if s["mimeType"] == gdocs.DOC_MIME]
+    if not sources:
+        return {"gdocs_task_synced": False}
+    try:
+        creds = gdocs.load_credentials(
+            interactive=False, client_secret=client_secret, scopes=gdocs.WRITE_SCOPES
+        )
+        _drive, _sheets, docs = gdocs.build_services(creds)
+    except Exception as exc:
+        return {"gdocs_task_synced": False, "gdocs_note": str(exc)}
+
+    from . import localwrite
+
+    needle = (task_query or "").strip().casefold()
+    if not needle:
+        return {"gdocs_task_synced": False}
+    target_char = "x" if status.lower() in {"done", "erledigt"} else " "
+
+    for source in sources:
+        try:
+            document = docs.documents().get(
+                documentId=source["id"], includeTabsContent=True
+            ).execute()
+        except TypeError:
+            try:
+                document = docs.documents().get(documentId=source["id"]).execute()
+            except Exception:
+                continue
+        except Exception:
+            continue
+
+        for tab_id, _tab_title, body in iter_tab_bodies(document):
+            text = tab_text(body)
+            for match in localwrite._TASK_RE.finditer(text):
+                if needle not in match.group("rest").casefold():
+                    continue
+                current_mark = match.group("mark").lower()
+                if current_mark == target_char:
+                    return {"gdocs_task_synced": True, "gdocs_unchanged": True}
+                old_line = match.group(0).strip()
+                new_line = f"{match.group('prefix').lstrip()}[{target_char}]{match.group('rest')}".rstrip()
+                try:
+                    changed, _ = _replace_all(docs, source["id"], "", old_line, new_line, tab_id)
+                    if changed:
+                        gdocs.sync(root, sources=[source], force=True, conn=conn)
+                        from .indexer import invalidate_sync_state
+
+                        invalidate_sync_state(conn, source["id"])
+                        return {"gdocs_task_synced": True, "gdocs_changed": changed}
+                except Exception as exc:
+                    return {"gdocs_task_synced": False, "gdocs_note": str(exc)}
+    return {"gdocs_task_synced": False}
+
+
 def set_status(
     root: Path,
     conn,
@@ -643,6 +707,15 @@ def set_status(
         result = localwrite.set_task_status(
             root, conn, str(task).strip(), status, dry_run=dry_run
         )
+        if not dry_run and conn is not None:
+            mirror_task = _mirror_task_to_gdocs(
+                root, conn, str(task).strip(), status, client_secret=client_secret
+            )
+            result.update(mirror_task)
+            if mirror_task.get("gdocs_changed"):
+                result["changed"] = True
+                result["written"] = True
+                result["verified"] = True
         return {**result, **gate}
 
     # Flipping a work order to ✅ is also an acceptance — run the same gate as above.
@@ -796,6 +869,21 @@ def set_status(
             docs, source["id"], revision, old_text, new_text, tab_id
         )
         if changed:
+            if status.lower() in {"done", "erledigt"} and current is not None:
+                for step in current.get("steps") or []:
+                    step_text = (step.get("text") or "").strip()
+                    if step_text and step.get("done"):
+                        try:
+                            _replace_all(
+                                docs,
+                                source["id"],
+                                "",
+                                f"- [ ] {step_text}",
+                                f"- [x] {step_text}",
+                                tab_id,
+                            )
+                        except Exception:
+                            pass
             gdocs.sync(root, sources=[source], force=True, conn=conn)
             parsed = json.loads(status_mod.status(conn))
             now = next((i for i in parsed["work_orders"] if i["wo"] == int(wo)), None)

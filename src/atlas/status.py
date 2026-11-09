@@ -88,15 +88,6 @@ def extract_work_orders(conn: sqlite3.Connection) -> list[dict]:
                 status = "done" if done and not open_ else ("open" if open_ else "unknown")
                 candidate_title = _title(segment, rel_end)
 
-                if number in items:
-                    existing = items[number]
-                    # A real Work Order 1 (e.g. from a synced Google Doc) always
-                    # overrides the untouched `atlas init` skeleton placeholder.
-                    if _is_boilerplate_wo(existing) and candidate_title.strip().casefold() not in _BOILERPLATE_WO1_TITLES:
-                        pass
-                    else:
-                        continue
-
                 # Collect lines belonging to this Work Order until the next Work Order or heading.
                 block_lines: list[str] = [segment]
                 steps: list[dict] = []
@@ -121,6 +112,43 @@ def extract_work_orders(conn: sqlite3.Connection) -> list[dict]:
                 for symbol in SYMBOL_RE.findall(context):
                     if symbol not in symbols:
                         symbols.append(symbol)
+
+                if number in items:
+                    existing = items[number]
+                    # A real Work Order 1 (e.g. from a synced Google Doc) always
+                    # overrides the untouched `atlas init` skeleton placeholder.
+                    if _is_boilerplate_wo(existing) and candidate_title.strip().casefold() not in _BOILERPLATE_WO1_TITLES:
+                        pass
+                    else:
+                        # Merge checklist step completion across local docs/ARCHITECTURE.md
+                        # and synced Google Docs so checking off a step locally is
+                        # immediately reflected even before Drive export catches up.
+                        if (
+                            status == "done"
+                            and (existing.get("title") or "").strip().casefold()
+                            == candidate_title.strip().casefold()
+                        ):
+                            existing["status"] = "done"
+                        if steps:
+                            existing_steps = existing.get("steps") or []
+                            if not existing_steps:
+                                existing["steps"] = steps
+                            else:
+                                done_by_text = {
+                                    s["text"].strip().casefold()
+                                    for s in steps
+                                    if s.get("done")
+                                }
+                                for es in existing_steps:
+                                    if es["text"].strip().casefold() in done_by_text:
+                                        es["done"] = True
+                            merged_steps = existing.get("steps") or []
+                            if merged_steps:
+                                existing["steps_done"] = sum(1 for s in merged_steps if s["done"])
+                                existing["steps_total"] = len(merged_steps)
+                        if not existing.get("spec_anchor") and spec_anchor:
+                            existing["spec_anchor"] = spec_anchor
+                        continue
 
                 entry: dict = {
                     "wo": number,
@@ -269,6 +297,10 @@ def _recover_unindexed_work_orders(proj_root: Path, indexed_wos: set[int]) -> li
             rec["status"] = str(entry["status"]).lower()
         if entry.get("title"):
             rec["title"] = str(entry["title"]).strip()
+        elif entry.get("line"):
+            m = WO_RE.search(str(entry["line"]))
+            if m:
+                rec["title"] = _title(str(entry["line"]), m.end())
 
     for wo_num, syms in sym_map.items():
         if wo_num in indexed_wos:

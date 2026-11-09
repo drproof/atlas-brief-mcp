@@ -207,4 +207,33 @@ def test_status_surfaces_unindexed_work_orders_from_audit_and_symbols(tmp_path):
     assert "WO 25" in rendered
 
 
+def test_extract_work_orders_merges_step_completion_between_gdoc_and_local():
+    """When a Work Order is mirrored in both Google Docs (`- [ ]`) and local
+    `docs/ARCHITECTURE.md` (`- [x]`), `extract_work_orders` must merge the step
+    completion so `atlas_set_status(wo=34, status='done')` does not refuse."""
+    conn = _conn([
+        (
+            "gdd#plan",
+            "Prototyp-Meilenstein-Plan",
+            "Work Order 34 — ⬜ OPEN (Hero Imprisonment & Save):\n"
+            "- [ ] Persist imprisoned_heroes in save file\n"
+            "- [ ] Restore imprisoned_heroes on load\n",
+        ),
+        (
+            "architecture#3-work-orders",
+            "3. Work Orders",
+            "Work Order 34 — ⬜ OPEN (Hero Imprisonment & Save):\n"
+            "- [x] Persist imprisoned_heroes in save file\n"
+            "- [x] Restore imprisoned_heroes on load\n",
+        ),
+    ])
+    items = extract_work_orders(conn)
+    assert len(items) == 1
+    assert items[0]["wo"] == 34
+    assert items[0]["steps_done"] == 2
+    assert items[0]["steps_total"] == 2
+    assert all(step["done"] for step in items[0]["steps"])
+
+
+
 

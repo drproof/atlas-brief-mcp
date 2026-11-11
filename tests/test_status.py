@@ -271,6 +271,32 @@ def test_reconcile_work_orders_restores_orphans_with_inferred_titles(tmp_path):
     assert "Self-healed" in status_text(after)
 
 
+def test_multipart_section_reassembles_steps_across_chunk_boundary():
+    """When a long Work Orders section is split into `anchor~1` and `anchor~2`,
+    steps located in `~2` for a Work Order header at the bottom of `~1` must not be lost."""
+    conn = _conn([
+        (
+            "architecture#3-work-orders~1",
+            "3. Work Orders (Part 1/2)",
+            "Work Order 7 — ⬜ OPEN (Boundary Split Order):\n"
+            "- [x] First step in part 1\n"
+            "- [x] Second step in part 1",
+        ),
+        (
+            "architecture#3-work-orders~2",
+            "3. Work Orders (Part 2/2)",
+            "- [x] Third step in part 2\n"
+            "- [ ] Fourth step in part 2",
+        ),
+    ])
+    items = extract_work_orders(conn)
+    assert len(items) == 1
+    assert items[0]["wo"] == 7
+    assert items[0]["steps_done"] == 3
+    assert items[0]["steps_total"] == 4
+
+
+
 
 
 

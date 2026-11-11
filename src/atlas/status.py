@@ -56,8 +56,33 @@ def extract_work_orders(conn: sqlite3.Connection) -> list[dict]:
         "SELECT anchor, heading, body FROM sections ORDER BY rowid"
     ).fetchall()
 
-    items: dict[int, dict] = {}
+    # Reassemble multi-part sections (`anchor~1`, `anchor~2`, ...) before scanning
+    # so a 1,500-char chunk boundary never separates a Work Order header from its `- [ ]` steps.
+    grouped_rows: list[dict] = []
+    by_base: dict[str, dict] = {}
     for row in rows:
+        raw_anchor = row["anchor"] or ""
+        if "~" in raw_anchor:
+            base_anchor = raw_anchor.split("~")[0]
+            if base_anchor in by_base:
+                by_base[base_anchor]["body"] += "\n" + (row["body"] or "")
+                continue
+            entry_row = {
+                "anchor": raw_anchor,
+                "heading": row["heading"],
+                "body": row["body"] or "",
+            }
+            by_base[base_anchor] = entry_row
+            grouped_rows.append(entry_row)
+        else:
+            grouped_rows.append({
+                "anchor": raw_anchor,
+                "heading": row["heading"],
+                "body": row["body"] or "",
+            })
+
+    items: dict[int, dict] = {}
+    for row in grouped_rows:
         heading_line = (row["heading"] or "").strip()
         lines = ([heading_line] if heading_line else []) + row["body"].splitlines()
         for index, line in enumerate(lines):

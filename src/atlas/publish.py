@@ -1041,6 +1041,82 @@ def _mirror_to_gdocs(root: Path, conn, wo: int, text_block: str, section: str) -
     return {"gdocs_synced": False}
 
 
+_WO_STOPWORDS = {
+    "the", "and", "for", "with", "from", "into", "that", "this", "und", "der",
+    "die", "das", "für", "von", "mit", "aus", "auf", "bei", "den", "dem",
+}
+
+
+def _normalize_wo_title(title: str) -> tuple[str, set[str]]:
+    cleaned = re.sub(r"[^\w\s]+", " ", (title or "").casefold())
+    words = [w for w in cleaned.split() if w]
+    norm = " ".join(words)
+    sig_words = {w for w in words if len(w) >= 3 and w not in _WO_STOPWORDS}
+    return norm, sig_words
+
+
+def _find_duplicate_wo(
+    existing_wos: list[dict],
+    topic: str,
+    steps: list[str] | None = None,
+) -> dict | None:
+    """Return an existing Work Order whose title matches or strongly overlaps `topic` (unless `steps` are disjoint follow-up tasks)."""
+    from . import status as status_mod
+
+    norm_topic, topic_words = _normalize_wo_title(topic)
+    if not norm_topic:
+        return None
+    new_steps = {s.strip().casefold() for s in (steps or []) if s and s.strip()}
+    for item in existing_wos:
+        if status_mod._is_boilerplate_wo(item):
+            continue
+        if item.get("status") != "open":
+            continue
+        cand_title = (item.get("title") or "").strip()
+        if not cand_title:
+            continue
+        norm_cand, cand_words = _normalize_wo_title(cand_title)
+        if not norm_cand:
+            continue
+        title_matched = norm_cand == norm_topic
+        if not title_matched and len(topic_words) >= 3 and len(cand_words) >= 3:
+            common = len(topic_words & cand_words)
+            overlap = common / min(len(topic_words), len(cand_words))
+            jaccard = common / len(topic_words | cand_words)
+            if overlap >= 0.85 and jaccard >= 0.75:
+                title_matched = True
+        if not title_matched:
+            continue
+        existing_steps = {
+            (s.get("text") or "").strip().casefold()
+            for s in (item.get("steps") or [])
+            if (s.get("text") or "").strip()
+        }
+        if new_steps and existing_steps and new_steps.isdisjoint(existing_steps):
+            continue
+        return item
+    return None
+
+
+def _next_free_wo_number(root: Path, existing_wos: list[dict]) -> int:
+    """Compute the next free Work Order number across indexed docs, `wo-symbols.yml`, and `mutations.log`."""
+    numbers: set[int] = {int(item["wo"]) for item in existing_wos if item.get("wo") is not None}
+    try:
+        numbers.update(int(k) for k in verify.load_wo_symbols(root).keys())
+    except Exception:
+        pass
+    try:
+        for entry in audit.tail(root, limit=0):
+            if entry.get("refused") or entry.get("verified") is False:
+                continue
+            raw_wo = entry.get("wo")
+            if raw_wo is not None:
+                numbers.add(int(raw_wo))
+    except Exception:
+        pass
+    return max(numbers, default=0) + 1
+
+
 def plan(
     root: Path,
     conn,
@@ -1056,7 +1132,27 @@ def plan(
 
     existing_wos = status_mod.extract_work_orders(conn)
     if wo is None:
-        wo_num = max((item["wo"] for item in existing_wos), default=0) + 1
+        dup = _find_duplicate_wo(existing_wos, topic, steps=steps)
+        if dup is not None:
+            if verify_symbols and not dry_run:
+                verify.record_wo_symbols(root, int(dup["wo"]), verify_symbols)
+            return {
+                "written": False,
+                "unchanged": True,
+                "deduplicated": True,
+                "verified": True,
+                "wo": int(dup["wo"]),
+                "status": dup.get("status", "open"),
+                "title": dup.get("title") or topic.strip(),
+                "spec_anchor": dup.get("spec_anchor", ""),
+                "steps": [s["text"] for s in (dup.get("steps") or [])],
+                "verify_symbols": [s.strip() for s in (verify_symbols or []) if s and s.strip()],
+                "message": (
+                    f"Work Order {dup['wo']} ('{dup.get('title')}') already covers this topic — "
+                    "reusing existing Work Order instead of creating a duplicate."
+                ),
+            }
+        wo_num = _next_free_wo_number(root, existing_wos)
     else:
         wo_num = int(wo)
 

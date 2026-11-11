@@ -1005,15 +1005,27 @@ def atlas_lint() -> str:
     )
 )
 @_health
-def atlas_status() -> str:
+def atlas_status(
+    reconcile: Annotated[
+        bool,
+        Field(
+            default=False,
+            description=(
+                "If true, automatically self-heal and synchronize orphaned Work Orders from `.atlas/mutations.log` "
+                "and `.atlas/wo-symbols.yml` into local `docs/ARCHITECTURE.md` and any bound Google Doc before "
+                "returning the status list (default false)."
+            ),
+        ),
+    ] = False,
+) -> str:
     """Return the complete list of documented Work Orders (`⬜ OPEN`, `🚧 IN PROGRESS`, `✅ DONE`) and index freshness.
 
-    Takes no parameters. Use this tool first when asked about project progress, completed milestones,
-    or which Work Order is next — one call returns the authoritative list without reading documentation files.
+    Call with no parameters for a fast read-only progress overview, or pass `reconcile=True` to automatically
+    restore unindexed audit-log Work Orders and cross-sync local and Google Docs entries in one step.
     For granular Markdown checkboxes (`- [ ]`), use `atlas_tasks` instead.
 
     Behavior & Output:
-    - Read-only query over all Work Order headings/entries in the index (up to 60 orders).
+    - Queries all Work Order headings/entries in the index (up to 60 orders).
     - Returns a human- and agent-readable summary starting with the index freshness timestamp,
       total counts (`done` / `open`), and one line per Work Order (`WO # — status — title (anchor)`).
     """
@@ -1021,8 +1033,10 @@ def atlas_status() -> str:
 
     from . import status as status_mod
 
-    _, conn = _fresh()
-    payload = _json.loads(status_mod.status(conn, limit=60, max_chars=60000))
+    root, conn = _fresh()
+    payload = _json.loads(
+        status_mod.status(conn, limit=60, max_chars=60000, root=root, reconcile=reconcile)
+    )
     return status_mod.status_text(payload)
 
 

@@ -249,6 +249,18 @@ def status_text(payload: dict) -> str:
             sym_note = f"  [symbols: {syms}]" if syms else ""
             title = uwo.get("title") or "(title not recorded in log)"
             lines.append(f"  ⚠️ WO {uwo['wo']:>2}  {title} ({uwo.get('status', 'done')}){sym_note}")
+    reconciled = payload.get("reconciled")
+    if reconciled and reconciled.get("total_reconciled"):
+        restored = reconciled.get("restored_from_audit") or []
+        synced_local = reconciled.get("synced_to_local") or []
+        synced_gdocs = reconciled.get("synced_to_gdocs") or []
+        lines.append("")
+        lines.append(
+            f"✓ Self-healed ({reconciled['total_reconciled']} action(s)): "
+            f"restored {len(restored)} from audit log, "
+            f"synced {len(synced_local)} to local docs, "
+            f"mirrored {len(synced_gdocs)} to Google Docs."
+        )
     lines.append("")
     lines.append(f"Open checkbox tasks: {payload['open_tasks']} · "
                  f"Documents: {payload['docs']}")
@@ -270,6 +282,38 @@ def _infer_root(conn: sqlite3.Connection) -> Path | None:
     except Exception:
         pass
     return None
+
+
+def _infer_title_from_git_or_symbols(proj_root: Path, wo_num: int, symbols: list[str]) -> str:
+    """Recover a missing Work Order title from git commit messages or fall back to its verified symbols."""
+    import subprocess
+
+    try:
+        proc = subprocess.run(
+            ["git", "log", "--all", "--format=%s", "-n", "100"],
+            cwd=str(proj_root),
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        if proc.returncode == 0 and proc.stdout:
+            wo_pat = re.compile(
+                rf"\b(?:Work\s*Order|WO)[-\s#]*0*{int(wo_num)}\b[:\s—–\-]*(?P<rest>.+)",
+                re.IGNORECASE,
+            )
+            for subject in proc.stdout.splitlines():
+                m = wo_pat.search(subject.strip())
+                if m:
+                    cand = m.group("rest").strip(" ():—–-")
+                    if len(cand) >= 4:
+                        return cand[:90]
+    except Exception:
+        pass
+
+    if symbols:
+        return f"Implemented {', '.join(symbols[:3])}"[:90]
+    return ""
 
 
 def _recover_unindexed_work_orders(proj_root: Path, indexed_wos: set[int]) -> list[dict]:
@@ -308,7 +352,112 @@ def _recover_unindexed_work_orders(proj_root: Path, indexed_wos: set[int]) -> li
         rec = by_wo.setdefault(wo_num, {"wo": wo_num, "status": "done", "title": "", "symbols": []})
         rec["symbols"] = list(dict.fromkeys(rec["symbols"] + syms))
 
+    for wo_num, rec in by_wo.items():
+        if not rec.get("title"):
+            inferred = _infer_title_from_git_or_symbols(proj_root, wo_num, rec.get("symbols") or [])
+            if inferred:
+                rec["title"] = inferred
+                rec["title_inferred"] = True
+
     return [by_wo[k] for k in sorted(by_wo)]
+
+
+def reconcile_work_orders(
+    root: Path,
+    conn: sqlite3.Connection,
+    dry_run: bool = False,
+) -> dict:
+    """Self-heal Work Order state across `mutations.log`/`wo-symbols.yml`, local `docs/ARCHITECTURE.md`, and bound Google Docs."""
+    from . import localwrite, publish as publish_mod
+
+    indexed = extract_work_orders(conn)
+    indexed_nums = {int(item["wo"]) for item in indexed}
+    unindexed = _recover_unindexed_work_orders(root, indexed_nums)
+
+    restored_from_audit: list[int] = []
+    synced_to_local: list[int] = []
+    synced_to_gdocs: list[int] = []
+
+    # 1. Restore orphaned Work Orders from audit log / wo-symbols.yml into local docs and Google Docs
+    for uwo in unindexed:
+        wo_num = int(uwo["wo"])
+        st = uwo.get("status") if uwo.get("status") in {"done", "open"} else "done"
+        syms = uwo.get("symbols") or []
+        title = (
+            uwo.get("title")
+            or (f"Implemented {', '.join(syms[:3])}" if syms else f"Work Order {wo_num}")
+        )
+        desc = (
+            "Symbols: " + ", ".join(f"`{s}`" for s in syms)
+            if syms
+            else "Restored from project audit log."
+        )
+        line = publish_mod.format_line(wo_num, st, title, desc)
+        if localwrite.find_line(root, wo_num) is None:
+            res = localwrite.publish(
+                root, conn, wo_num, line, publish_mod.DEFAULT_SECTION, dry_run=dry_run
+            )
+            if res.get("written") or (dry_run and res.get("line")):
+                restored_from_audit.append(wo_num)
+        if not dry_run:
+            mirror = publish_mod._mirror_to_gdocs(
+                root, conn, wo_num, line, publish_mod.DEFAULT_SECTION
+            )
+            if mirror.get("gdocs_synced") and not mirror.get("gdocs_existing"):
+                synced_to_gdocs.append(wo_num)
+
+    # 2. Cross-sync indexed Work Orders between local docs and bound Google Docs
+    for item in extract_work_orders(conn):
+        if _is_boilerplate_wo(item):
+            continue
+        wo_num = int(item["wo"])
+        st = item.get("status") if item.get("status") in {"done", "open"} else "open"
+        title = item.get("title") or f"Work Order {wo_num}"
+        syms = item.get("symbols") or []
+        desc_parts: list[str] = []
+        if item.get("spec_anchor"):
+            desc_parts.append(f"Spec `{item['spec_anchor']}`")
+        if syms:
+            desc_parts.append("Symbols: " + ", ".join(f"`{s}`" for s in syms))
+        header = publish_mod.format_line(
+            wo_num,
+            st,
+            title,
+            " · ".join(desc_parts) if desc_parts else "Synchronized Work Order.",
+        )
+        step_lines = [
+            f"- [{'x' if s.get('done') else ' '}] {s['text']}"
+            for s in (item.get("steps") or [])
+        ]
+        block = "\n".join([header, *step_lines])
+
+        found_local = localwrite.find_line(root, wo_num)
+        if found_local is None:
+            res = localwrite.publish(
+                root, conn, wo_num, block, publish_mod.DEFAULT_SECTION, dry_run=dry_run
+            )
+            if res.get("written") or (dry_run and res.get("line")):
+                synced_to_local.append(wo_num)
+        elif not dry_run:
+            localwrite.set_status(root, conn, wo_num, st, dry_run=False)
+
+        if not dry_run:
+            mirror = publish_mod._mirror_to_gdocs(
+                root, conn, wo_num, block, publish_mod.DEFAULT_SECTION
+            )
+            if mirror.get("gdocs_synced") and not mirror.get("gdocs_existing"):
+                if wo_num not in synced_to_gdocs:
+                    synced_to_gdocs.append(wo_num)
+
+    return {
+        "dry_run": dry_run,
+        "restored_from_audit": restored_from_audit,
+        "synced_to_local": synced_to_local,
+        "synced_to_gdocs": synced_to_gdocs,
+        "total_reconciled": (
+            len(restored_from_audit) + len(synced_to_local) + len(synced_to_gdocs)
+        ),
+    }
 
 
 def status(
@@ -316,9 +465,14 @@ def status(
     limit: int = 30,
     max_chars: int = 8000,
     root: Path | None = None,
+    reconcile: bool = False,
 ) -> str:
-    work_orders = extract_work_orders(conn)
     proj_root = root or _infer_root(conn)
+    reconcile_report: dict | None = None
+    if reconcile and proj_root is not None:
+        reconcile_report = reconcile_work_orders(proj_root, conn, dry_run=False)
+
+    work_orders = extract_work_orders(conn)
     unindexed: list[dict] = []
     if proj_root is not None:
         from . import verify
@@ -358,6 +512,8 @@ def status(
     }
     if unindexed:
         payload["unindexed_work_orders"] = unindexed
+    if reconcile_report is not None:
+        payload["reconciled"] = reconcile_report
 
     text = json.dumps(payload, ensure_ascii=False)
     if len(text) <= max_chars:

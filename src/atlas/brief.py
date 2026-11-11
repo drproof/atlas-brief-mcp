@@ -107,22 +107,146 @@ def find_open_work_orders(conn, work_order: int | None = None) -> list[dict]:
     return in_progress + not_started
 
 
-def _symbol_status_lines(root: Path, symbols: list[str]) -> list[str]:
+def _symbol_status_lines(
+    root: Path,
+    symbols: list[str],
+    current_wo: int | None = None,
+    conn=None,
+) -> list[str]:
     """Check current definition and caller status for target symbols across the codebase."""
     from . import verify
 
     result = verify.check(root, symbols[:8])
+    guards_map = verify.symbol_guards(root, conn=conn)
     lines: list[str] = []
     for item in result.get("symbols", []):
         sym = item["symbol"]
+        other_guards = [
+            g for g in guards_map.get(sym, [])
+            if current_wo is None or int(g["wo"]) != int(current_wo)
+        ]
+        shield = ""
+        if other_guards:
+            labels = ", ".join(f"WO {g['wo']}" for g in other_guards)
+            shield = f" · 🛡️ guarded by {labels}"
         if not item["defined"]:
-            lines.append(f"- `{sym}` — **not defined yet** (needs implementation)")
+            lines.append(f"- `{sym}` — **not defined yet** (needs implementation){shield}")
         else:
             calls = item["calls"]
             refs = item["refs"]
             state = f"{calls} call(s), {refs} ref(s)" if (calls + refs) > 0 else "⚠️ 0 callers (unwired)"
-            lines.append(f"- `{sym}` — defined in `{item['definition']}` ({state})")
+            lines.append(f"- `{sym}` — defined in `{item['definition']}` ({state}){shield}")
     return lines
+
+
+def _handoff_context(
+    root: Path,
+    work_order: int | None = None,
+    files: list[str] | None = None,
+    recorded_syms: list[str] | None = None,
+    conn=None,
+) -> list[str]:
+    """Build a compact multi-agent handoff block: recent audit log actions, working-tree edits, and protected symbols."""
+    import subprocess
+    from . import audit, verify
+
+    out: list[str] = []
+
+    # 1. Recent agent activity from `.atlas/mutations.log`
+    log_entries = audit.tail(root, limit=15)
+    if log_entries:
+        recent = log_entries[-3:]
+        activity_parts: list[str] = []
+        for entry in recent:
+            stamp = str(entry.get("ts", ""))[11:16] or str(entry.get("ts", ""))[:10]
+            tool = str(entry.get("tool", "?"))
+            if entry.get("task"):
+                task_txt = str(entry["task"])[:45]
+                st = entry.get("status", "done")
+                activity_parts.append(f"`{stamp}` {tool} `{task_txt}` -> {st}")
+            elif entry.get("wo") is not None:
+                wo_n = entry["wo"]
+                st = entry.get("status") or entry.get("new") or "updated"
+                activity_parts.append(f"`{stamp}` {tool} WO {wo_n} ({st})")
+            else:
+                activity_parts.append(f"`{stamp}` {tool}")
+        if activity_parts:
+            out.append("- **Recent agent actions:** " + " · ".join(activity_parts))
+
+    # 2. Uncommitted git working-tree files (excluding .atlas/.gdd cache)
+    try:
+        proc = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=str(root),
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+        if proc.returncode == 0 and proc.stdout.strip():
+            dirty: list[str] = []
+            for raw in proc.stdout.splitlines():
+                if len(raw) < 4:
+                    continue
+                rel = raw[3:].strip().strip('"')
+                if " -> " in rel:
+                    rel = rel.split(" -> ", 1)[1].strip()
+                if rel.startswith((".atlas/", ".gdd/")) or "__pycache__" in rel:
+                    continue
+                if rel not in dirty:
+                    dirty.append(rel)
+            if dirty:
+                aff_set = {f.replace("\\", "/") for f in (files or [])}
+                overlap = [d for d in dirty if d in aff_set]
+                overlap_note = (
+                    f" — touches affected file(s): {', '.join(f'`{f}`' for f in overlap[:4])}"
+                    if overlap
+                    else ""
+                )
+                sample = ", ".join(f"`{d}`" for d in dirty[:5])
+                more = f" (+{len(dirty) - 5} more)" if len(dirty) > 5 else ""
+                out.append(
+                    f"- **Working tree (uncommitted):** {len(dirty)} file(s): {sample}{more}{overlap_note}"
+                )
+    except Exception:
+        pass
+
+    # 3. Protected symbols from earlier completed Work Orders in affected files
+    guards_map = verify.symbol_guards(root, conn=conn)
+    if guards_map and files:
+        protected_hits: list[str] = []
+        seen_syms: set[str] = set()
+        for rel in files[:10]:
+            fpath = root / rel
+            if not fpath.is_file():
+                continue
+            try:
+                text = fpath.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                continue
+            for sym, g_list in guards_map.items():
+                if sym in seen_syms or sym not in text:
+                    continue
+                other_wos = [
+                    g["wo"] for g in g_list
+                    if work_order is None or int(g["wo"]) != int(work_order)
+                ]
+                if not other_wos:
+                    continue
+                seen_syms.add(sym)
+                wo_labels = ", ".join(f"WO {w}" for w in other_wos[:2])
+                protected_hits.append(f"`{sym}` ({wo_labels})")
+                if len(protected_hits) >= 6:
+                    break
+            if len(protected_hits) >= 6:
+                break
+        if protected_hits:
+            out.append(
+                "- 🛡️ **Protected symbols in affected files (do not break):** "
+                + ", ".join(protected_hits)
+            )
+
+    return out
 
 
 def build(
@@ -247,13 +371,24 @@ def build(
         lines.append("_No `implements:` mapping in the docs — search the code yourself._")
     lines.append("")
 
+    wo_steps = (wo_item or {}).get("steps") or []
+    recorded_syms = verify.load_wo_symbols(root).get(int(work_order), []) if work_order else []
+    handoff_lines = _handoff_context(
+        root, work_order=work_order, files=files, recorded_syms=recorded_syms, conn=conn
+    )
+    if handoff_lines:
+        lines.extend([
+            "### Handoff & Regression Context",
+            "",
+            *handoff_lines,
+            "",
+        ])
+
     if include_rules:
         rules = _load_rules(root)
         if rules:
             lines.extend(["## 3. Guardrails (still in force)", "", rules, ""])
 
-    wo_steps = (wo_item or {}).get("steps") or []
-    recorded_syms = verify.load_wo_symbols(root).get(int(work_order), []) if work_order else []
     if wo_steps:
         done_cnt = sum(1 for s in wo_steps if s.get("done"))
         lines.extend([
@@ -279,7 +414,7 @@ def build(
         ])
 
     if recorded_syms:
-        sym_lines = _symbol_status_lines(root, recorded_syms)
+        sym_lines = _symbol_status_lines(root, recorded_syms, current_wo=work_order, conn=conn)
         if sym_lines:
             lines.extend([
                 "### Target symbols (wiring gate)",
@@ -412,7 +547,7 @@ def build_queue(
         recorded_syms = sym_map.get(int(wo_num), [])
         if recorded_syms:
             lines.append("**Target symbols (wiring gate):**")
-            lines.extend(_symbol_status_lines(root, recorded_syms))
+            lines.extend(_symbol_status_lines(root, recorded_syms, current_wo=wo_num, conn=conn))
             lines.append("")
 
         sym_flag = f" --verify-symbols {','.join(recorded_syms)}" if recorded_syms else ""

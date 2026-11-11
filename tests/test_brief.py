@@ -114,3 +114,44 @@ def test_brief_auto_selects_next_open_work_order_with_steps_and_symbols(tmp_path
     assert "atlas set-status --wo 3 --status done --verify-symbols check_burn_resist" in queue_output
 
 
+def test_brief_includes_handoff_context_and_protected_symbols(tmp_path):
+    """`brief.build` includes recent `mutations.log` actions and warns about symbols in affected files guarded by earlier WOs."""
+    from atlas import audit, bootstrap, indexer, publish as publish_mod, verify
+
+    root = tmp_path / "proj"
+    (root / "core").mkdir(parents=True)
+    (root / "core" / "combat.py").write_text(
+        "def resolve_hazard_zone() -> int:\n    return 1\n\n"
+        "def trigger_combo() -> int:\n    return resolve_hazard_zone()\n",
+        encoding="utf-8",
+    )
+    bootstrap.init_project(root)
+    (root / "docs" / "02-combat.md").write_text(
+        "---\nimplements: [core/combat.py]\n---\n\n"
+        "# Combat\n\n## Hazard Zones\n\nImplemented in `core/combat.py`.\n",
+        encoding="utf-8",
+    )
+    conn = indexer.open_index(root)
+    indexer.refresh(conn, root, force=True)
+
+    # Record WO 16 as a completed Work Order guarding `resolve_hazard_zone`
+    publish_mod.publish(
+        root, conn, wo=16, status="done", title="Hazard Zones",
+        verify_symbols=["resolve_hazard_zone"],
+    )
+    # Plan WO 17 touching the same section/file
+    publish_mod.plan(
+        root, conn, "Hazard Zones",
+        steps=["Extend hazard zone combo"],
+        verify_symbols=["trigger_combo"],
+    )
+    audit.log(root, "set_task_status", task="Extend hazard zone combo", status="done", verified=True)
+
+    out = brief.build(conn, root, work_order=17)
+    assert "### Handoff & Regression Context" in out
+    assert "Recent agent actions:" in out
+    assert "Protected symbols in affected files (do not break):" in out
+    assert "`resolve_hazard_zone` (WO 16)" in out
+
+
+

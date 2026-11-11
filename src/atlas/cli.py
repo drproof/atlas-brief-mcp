@@ -145,6 +145,11 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("anchor")
 
     p = sub.add_parser("status", parents=[common], help="progress: work order status")
+    p.add_argument("--reconcile", action="store_true",
+                   help="self-heal unindexed audit-log Work Orders and cross-sync local & Google Docs")
+    p = sub.add_parser("reconcile", parents=[common],
+                       help="self-heal orphaned Work Orders and cross-sync local & Google Docs")
+    p.add_argument("--dry-run", action="store_true", help="preview without writing")
     sub.add_parser("lint", parents=[common], help="check structure (cleanup list)")
 
     p = sub.add_parser("brief", parents=[common],
@@ -571,14 +576,28 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "status":
         from . import status as status_mod
 
-        raw = status_mod.status(conn)
+        raw = status_mod.status(conn, root=root, reconcile=bool(getattr(args, "reconcile", False)))
         if as_json:
             print(json.dumps(json.loads(raw), ensure_ascii=False, indent=2))
             return 0
         data = json.loads(raw)
+        print(status_mod.status_text(data))
+    elif args.command == "reconcile":
         from . import status as status_mod
 
-        print(status_mod.status_text(data))
+        refresh(conn, root)
+        report = status_mod.reconcile_work_orders(root, conn, dry_run=bool(getattr(args, "dry_run", False)))
+        if as_json:
+            print(json.dumps(report, ensure_ascii=False, indent=2))
+        else:
+            prefix = "[dry-run] " if report.get("dry_run") else ""
+            print(
+                f"{prefix}Reconciled {report['total_reconciled']} Work Order action(s): "
+                f"restored={report['restored_from_audit']}, "
+                f"local={report['synced_to_local']}, "
+                f"gdocs={report['synced_to_gdocs']}"
+            )
+        return 0
     elif args.command == "lint":
         from . import bootstrap, lint as lint_mod
 

@@ -350,4 +350,31 @@ def test_find_and_render_with_include_body(tmp_path):
     assert "return b - 1" not in rendered
 
 
+def test_render_shows_guarded_by_wo_shield(tmp_path):
+    """`code.render` displays a `🛡️ Guarded by WO <N>` warning when a symbol is monitored in `wo-symbols.yml`."""
+    from atlas import verify
+    from atlas.indexer import open_index
+
+    root = tmp_path / "shield_proj"
+    (root / "src").mkdir(parents=True)
+    (root / "docs").mkdir(parents=True)
+    (root / "src" / "combat.py").write_text(
+        "def resolve_combat_zone(x: int) -> int:\n    return x\n\n"
+        "def tick() -> int:\n    return resolve_combat_zone(1)\n",
+        encoding="utf-8",
+    )
+    (root / "docs" / "ARCHITECTURE.md").write_text(
+        "# Architecture\n\n## 3. Work Orders\n\n"
+        "Work Order 16 — ✅ DONE (Kampf-Auflösung & Zonen): Done.\n",
+        encoding="utf-8",
+    )
+    conn = open_index(root)
+    conn.close()
+    verify.record_wo_symbols(root, 16, ["resolve_combat_zone"])
+
+    rendered = code.render(root, "resolve_combat_zone")
+    assert "🛡️ Guarded by WO 16 (Kampf-Auflösung & Zonen) — keep signature & callers wired" in rendered
+
+
+
 

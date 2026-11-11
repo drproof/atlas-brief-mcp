@@ -235,5 +235,42 @@ def test_extract_work_orders_merges_step_completion_between_gdoc_and_local():
     assert all(step["done"] for step in items[0]["steps"])
 
 
+def test_reconcile_work_orders_restores_orphans_with_inferred_titles(tmp_path):
+    """`reconcile_work_orders` and `status(..., reconcile=True)` restore orphaned WOs
+    from `wo-symbols.yml` / `mutations.log` (inferring missing titles from symbols)
+    into `docs/ARCHITECTURE.md`."""
+    import json
+    from atlas import verify
+    from atlas.indexer import open_index
+    from atlas.status import extract_work_orders, status, status_text
+
+    (tmp_path / "docs").mkdir()
+    arch = tmp_path / "docs" / "ARCHITECTURE.md"
+    arch.write_text(
+        "# Architecture\n\n## 3. Work Orders\n\n"
+        "Work Order 1 — ✅ DONE (Core Unit): Initial.\n",
+        encoding="utf-8",
+    )
+    conn = open_index(tmp_path)
+
+    # Orphaned WO 25 with symbols only (no title in log)
+    verify.record_wo_symbols(tmp_path, 25, ["trigger_tar_ignition", "spread_lightning"])
+
+    before = json.loads(status(conn, root=tmp_path))
+    assert [u["wo"] for u in before["unindexed_work_orders"]] == [25]
+    assert "trigger_tar_ignition" in before["unindexed_work_orders"][0]["title"]
+
+    # Now run status with reconcile=True -> WO 25 is written into ARCHITECTURE.md and indexed
+    after = json.loads(status(conn, root=tmp_path, reconcile=True))
+    assert after["reconciled"]["restored_from_audit"] == [25]
+    assert "unindexed_work_orders" not in after
+    wos = {w["wo"]: w for w in extract_work_orders(conn)}
+    assert 25 in wos
+    assert wos[25]["status"] == "done"
+    assert "trigger_tar_ignition" in wos[25]["title"]
+    assert "Self-healed" in status_text(after)
+
+
+
 
 

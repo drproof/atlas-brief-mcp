@@ -359,17 +359,21 @@ def render(
     with_usage: bool = False,
     include_body: bool = False,
 ) -> str:
+    from . import verify
+
     hits = find(root, symbol, limit=limit, include_body=include_body)
     usage = references(root, symbol, limit=limit)
     total = usage["call_count"] + usage["ref_count"]
+    guards_map = verify.symbol_guards(root)
 
-    if not hits and not total:
+    if not hits and not total and symbol.strip() not in guards_map:
         return (
             f"No match for '{symbol}' — neither as a definition nor as "
             "a usage (including .tscn signal connections)."
         )
 
     lines: list[str] = []
+    shown_guards: set[str] = set()
     if hits:
         lines.append(f"{len(hits)} definition(s) for '{symbol}':")
         for hit in hits:
@@ -379,6 +383,16 @@ def render(
                 else f"{hit['line']}"
             )
             lines.append(f"  {hit['path']}:{span}  {hit['signature']}")
+            sym_guards = guards_map.get(hit["symbol"], [])
+            if sym_guards:
+                shown_guards.add(hit["symbol"])
+                labels = [
+                    f"WO {g['wo']} ({g['title']})" if g.get("title") else f"WO {g['wo']}"
+                    for g in sym_guards
+                ]
+                lines.append(
+                    f"  🛡️ Guarded by {', '.join(labels)} — keep signature & callers wired"
+                )
             if include_body and hit.get("body"):
                 lines.append("  ```")
                 block = hit.get("numbered_body") or hit["body"]
@@ -396,6 +410,14 @@ def render(
                     )
     else:
         lines.append(f"No definition for '{symbol}' — used, but not defined.")
+        if symbol.strip() in guards_map:
+            labels = [
+                f"WO {g['wo']} ({g['title']})" if g.get("title") else f"WO {g['wo']}"
+                for g in guards_map[symbol.strip()]
+            ]
+            lines.append(
+                f"  🛡️ Guarded by {', '.join(labels)} — required symbol is missing!"
+            )
 
     # Always include wiring info. Costs two lines and prevents WO 8.
     lines.append(

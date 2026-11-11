@@ -413,4 +413,45 @@ def test_set_status_task_mirrors_to_gdocs_and_wo_close_flips_gdoc_steps(monkeypa
     assert "Work Order 34 — ✅ DONE" in arch.read_text(encoding="utf-8")
 
 
+def test_plan_deduplicates_matching_wo_and_respects_audit_numbers(tmp_path):
+    """`plan` reuses an existing Work Order when called again with the same topic/steps
+    and skips Work Order numbers already recorded in `wo-symbols.yml` / `mutations.log`."""
+    from atlas import verify
+    from atlas.indexer import open_index
+
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    arch = docs_dir / "ARCHITECTURE.md"
+    arch.write_text(
+        "# Architecture\n\n## 3. Work Orders\n\n"
+        "Work Order 1 — ✅ DONE (Core Unit): Done.\n",
+        encoding="utf-8",
+    )
+    conn = open_index(tmp_path)
+
+    # Record WO 25 in wo-symbols.yml (unindexed in doc) -> next free WO must be 26, not 2!
+    verify.record_wo_symbols(tmp_path, 25, ["trigger_tar_ignition"])
+
+    first = publish.plan(
+        tmp_path,
+        conn,
+        "Hero Imprisonment & Recruitment Flow",
+        steps=["Persist imprisoned heroes", "Add recruitment dialogue"],
+    )
+    assert first["wo"] == 26
+    assert first["written"] is True
+
+    # Calling plan again with the same topic and overlapping steps deduplicates to WO 26
+    second = publish.plan(
+        tmp_path,
+        conn,
+        "Hero Imprisonment & Recruitment Flow",
+        steps=["Persist imprisoned heroes", "Add recruitment dialogue"],
+    )
+    assert second["deduplicated"] is True
+    assert second["wo"] == 26
+    assert second["written"] is False
+
+
+
 

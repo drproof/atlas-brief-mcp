@@ -94,6 +94,66 @@ def record_wo_symbols(root, wo: int, symbols: list[str] | None) -> Path | None:
     return path
 
 
+def symbol_guards(root, conn=None) -> dict[str, list[dict]]:
+    """Return `{symbol_name: [{'wo': 16, 'title': '...', 'status': 'done'}, ...]}` for symbols monitored in `wo-symbols.yml`."""
+    import sqlite3
+
+    root_path = Path(root)
+    mapping = load_wo_symbols(root_path)
+    if not mapping:
+        return {}
+
+    wo_info: dict[int, dict] = {}
+    close_conn = False
+    active_conn = conn
+    if active_conn is None:
+        db_path = cache_dir(root_path) / "index.sqlite"
+        if db_path.exists():
+            try:
+                active_conn = sqlite3.connect(str(db_path))
+                active_conn.row_factory = sqlite3.Row
+                close_conn = True
+            except Exception:
+                active_conn = None
+
+    if active_conn is not None:
+        try:
+            from . import status as status_mod
+
+            for item in status_mod.extract_work_orders(active_conn):
+                wo_info[int(item["wo"])] = {
+                    "wo": int(item["wo"]),
+                    "title": item.get("title") or "",
+                    "status": item.get("status") or "done",
+                }
+            for item in status_mod._recover_unindexed_work_orders(root_path, set(wo_info)):
+                wo_info[int(item["wo"])] = {
+                    "wo": int(item["wo"]),
+                    "title": item.get("title") or "",
+                    "status": item.get("status") or "done",
+                }
+        except Exception:
+            pass
+        finally:
+            if close_conn:
+                try:
+                    active_conn.close()
+                except Exception:
+                    pass
+
+    guards: dict[str, list[dict]] = {}
+    for wo_num, symbols in sorted(mapping.items()):
+        info = wo_info.get(
+            int(wo_num),
+            {"wo": int(wo_num), "title": "", "status": "done"},
+        )
+        for sym in symbols:
+            clean = str(sym).strip()
+            if clean:
+                guards.setdefault(clean, []).append(info)
+    return guards
+
+
 def check(root, symbols: list[str]) -> dict:
     """Check each symbol for definition and wiring. No network, no index."""
     report = []

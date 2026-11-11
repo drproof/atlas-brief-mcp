@@ -47,7 +47,42 @@ def log(root, tool: str, **fields) -> Path:
     return path
 
 
-def tail(root, limit: int = 20) -> list[dict]:
+def _tail_file_lines(path: Path, limit: int, only_wo: bool = False) -> list[str]:
+    """Read up to the last `limit` lines of `path` without loading multi-MB logs into RAM."""
+    if limit <= 0:
+        out: list[str] = []
+        with path.open("r", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                if only_wo and '"wo"' not in line:
+                    continue
+                stripped = line.rstrip("\r\n")
+                if stripped:
+                    out.append(stripped)
+        return out
+    size = path.stat().st_size
+    if size <= 65536:
+        lines = path.read_text(encoding="utf-8", errors="replace").splitlines()
+        if only_wo:
+            lines = [ln for ln in lines if '"wo"' in ln]
+        return lines[-limit:]
+    window = max(65536, limit * 1024)
+    with path.open("rb") as fh:
+        while True:
+            offset = max(0, size - window)
+            fh.seek(offset)
+            chunk = fh.read(size - offset).decode("utf-8", errors="replace")
+            lines = chunk.splitlines()
+            if offset > 0 and lines:
+                # Drop potentially truncated leading line at arbitrary byte boundary.
+                lines = lines[1:]
+            if only_wo:
+                lines = [ln for ln in lines if '"wo"' in ln]
+            if len(lines) >= limit or offset == 0:
+                return lines[-limit:]
+            window *= 2
+
+
+def tail(root, limit: int = 20, only_wo: bool = False) -> list[dict]:
     from .config import CACHE_DIR, LEGACY_CACHE_DIR
 
     root_path = Path(root)
@@ -60,7 +95,7 @@ def tail(root, limit: int = 20) -> list[dict]:
     raw_lines: list[str] = []
     for path in paths:
         try:
-            raw_lines.extend(path.read_text(encoding="utf-8", errors="replace").splitlines())
+            raw_lines.extend(_tail_file_lines(path, limit, only_wo=only_wo))
         except OSError:
             continue
     entries: list[dict] = []

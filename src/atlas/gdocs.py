@@ -52,8 +52,25 @@ SHEET_MIME = "application/vnd.google-apps.spreadsheet"
 # to work.
 STATUS_MARK = {"done": "✅ DONE", "open": "⬜ OPEN"}
 MARKS_BY_STATUS = {
-    "done": ("✅ DONE", "✅ ERLEDIGT", "☑ ERLEDIGT", "☑ DONE"),
-    "open": ("⬜ OPEN", "⬜ OFFEN", "☐ OFFEN", "☐ OPEN"),
+    "done": (
+        "✅ DONE",
+        "✅ ERLEDIGT",
+        "☑ ERLEDIGT",
+        "☑ DONE",
+        "✅ ABGESCHLOSSEN",
+        "☑ ABGESCHLOSSEN",
+    ),
+    "open": (
+        "⬜ OPEN",
+        "⬜ OFFEN",
+        "☐ OFFEN",
+        "☐ OPEN",
+        "⬜ AUSSTEHEND",
+        "☐ AUSSTEHEND",
+        "🚧 IN PROGRESS",
+        "🚧 OFFEN",
+        "🚧 OPEN",
+    ),
 }
 
 
@@ -308,15 +325,114 @@ _WO_LINE_RE = re.compile(
     r"^[ \t>*#-]*Work\s*Order\s*(?P<wo>\d+)\s*(?:—|–|-|:)\s*(?:✅|⬜|☑|☐|🚧).*$",
     re.IGNORECASE | re.MULTILINE,
 )
+_CACHE_STEP_RE = re.compile(r"^[ \t]*(?:[-*+]|\d+\.)[ \t]+\[(?P<mark>[ xX])\][ \t]+(?P<text>.+)$")
+_CACHE_DONE_RE = re.compile(r"✅|☑|\bERLEDIGT\b|\bABGESCHLOSSEN\b|\bDONE\b", re.IGNORECASE)
+_CACHE_OPEN_MARK_RE = re.compile(
+    r"(?:⬜|☐)\s*(?:OFFEN|AUSSTEHEND|OPEN)|🚧\s*(?:IN\s+PROGRESS|OFFEN|OPEN)?|⬜|☐|🚧",
+    re.IGNORECASE,
+)
+
+
+def _extract_wo_blocks(text: str) -> dict[int, dict[str, Any]]:
+    """Extract `{wo_num: {'header': str, 'block': str, 'done': bool, 'steps': [(done, text, raw), ...]}}`."""
+    lines = text.splitlines()
+    blocks: dict[int, dict[str, Any]] = {}
+    idx = 0
+    while idx < len(lines):
+        m = _WO_LINE_RE.match(lines[idx])
+        if not m:
+            idx += 1
+            continue
+        wo_num = int(m.group("wo"))
+        header = lines[idx].strip()
+        block_lines = [header]
+        steps: list[tuple[bool, str, str]] = []
+        j = idx + 1
+        while j < len(lines):
+            nxt = lines[j]
+            stripped = nxt.strip()
+            if stripped.startswith("#") or _WO_LINE_RE.match(nxt):
+                break
+            sm = _CACHE_STEP_RE.match(nxt)
+            if sm:
+                block_lines.append(nxt.rstrip())
+                steps.append((sm.group("mark").lower() == "x", sm.group("text").strip(), nxt.rstrip()))
+            elif not stripped and steps:
+                # Allow blank line inside or after; stop block capture if next non-blank isn't a step
+                if j + 1 < len(lines) and _CACHE_STEP_RE.match(lines[j + 1]):
+                    j += 1
+                    continue
+                break
+            elif stripped and not steps:
+                # Prose line directly under WO before steps
+                block_lines.append(nxt.rstrip())
+                j += 1
+                continue
+            else:
+                break
+            j += 1
+        prefix_window = header[m.end("wo") - (len(lines[idx]) - len(lines[idx].lstrip())):][:36]
+        is_done = bool(_CACHE_DONE_RE.search(prefix_window))
+        blocks[wo_num] = {
+            "header": header,
+            "block": "\n".join(block_lines),
+            "done": is_done,
+            "steps": steps,
+        }
+        idx = j
+    return blocks
+
+
+def _latest_audit_states(root: Path) -> tuple[dict[int, str], list[tuple[int | None, str, str]]]:
+    """Read authoritative recent WO and WO-scoped task statuses from `mutations.log`."""
+    from . import audit
+
+    status_map = {
+        "done": "done",
+        "erledigt": "done",
+        "abgeschlossen": "done",
+        "open": "open",
+        "offen": "open",
+        "ausstehend": "open",
+        "todo": "open",
+        "in_progress": "open",
+        "in progress": "open",
+    }
+    wo_state: dict[int, str] = {}
+    task_entries: list[tuple[int | None, str, str]] = []
+    for entry in audit.tail(root, limit=60):
+        if entry.get("refused") or entry.get("verified") is False:
+            continue
+        raw_st = str(entry.get("status") or "").strip().lower()
+        if not raw_st and entry.get("new"):
+            raw_st = "done" if _CACHE_DONE_RE.search(str(entry["new"])) else "open"
+        norm_st = status_map.get(raw_st, "")
+        if not norm_st:
+            continue
+        entry_wo: int | None = None
+        if entry.get("wo") is not None:
+            try:
+                entry_wo = int(entry["wo"])
+            except (TypeError, ValueError):
+                entry_wo = None
+        if entry.get("task"):
+            task_q = str(entry["task"]).strip().casefold()
+            if task_q:
+                task_entries.append((entry_wo, task_q, norm_st))
+        elif entry_wo is not None:
+            wo_state[entry_wo] = norm_st
+    return wo_state, task_entries
 
 
 def _rescue_cached_work_orders(root: Path, filename: str, new_body: str) -> str:
-    """Preserve Work Order status lines from existing `.atlas/cache` or `.gdd/cache` files if missing from `new_body`."""
+    """Preserve Work Order blocks, DONE transitions, and checked steps from `.atlas/cache` when Drive export lags."""
     from .config import CACHE_DIR, LEGACY_CACHE_DIR
 
-    present_wos = {int(m.group("wo")) for m in _WO_LINE_RE.finditer(new_body)}
-    rescued_lines: list[tuple[int, str]] = []
+    new_blocks = _extract_wo_blocks(new_body)
+    present_wos = set(new_blocks.keys())
+    wo_audit, task_entries = _latest_audit_states(root)
 
+    cached_blocks: dict[int, dict[str, Any]] = {}
     for cdir in (root / CACHE_DIR / "cache", root / LEGACY_CACHE_DIR / "cache"):
         candidate = cdir / filename
         if not candidate.exists():
@@ -325,17 +441,80 @@ def _rescue_cached_work_orders(root: Path, filename: str, new_body: str) -> str:
             old_text = candidate.read_text(encoding="utf-8", errors="replace")
         except OSError:
             continue
-        for match in _WO_LINE_RE.finditer(old_text):
-            wo_num = int(match.group("wo"))
-            if wo_num not in present_wos:
-                present_wos.add(wo_num)
-                rescued_lines.append((wo_num, match.group(0).strip()))
+        for wo_num, info in _extract_wo_blocks(old_text).items():
+            if wo_num not in cached_blocks:
+                cached_blocks[wo_num] = info
 
-    if not rescued_lines:
-        return new_body
+    # Count distinct Work Orders containing each normalized step text so legacy
+    # unscoped task audit entries never spill over onto duplicate steps in other WOs.
+    step_wos: dict[str, set[int]] = {}
+    for source_map in (new_blocks, cached_blocks):
+        for wo_num, info in source_map.items():
+            for _done, s_txt, _raw in (info.get("steps") or []):
+                step_wos.setdefault(s_txt.casefold(), set()).add(wo_num)
 
-    rescued_block = "\n".join(line for _, line in sorted(rescued_lines))
-    return f"{new_body.rstrip()}\n\n{rescued_block}\n"
+    # 1. Prevent stale Drive export from downgrading confirmed DONE status or checked steps on present WOs
+    patched_lines = new_body.splitlines()
+    current_wo: int | None = None
+    for i, line in enumerate(patched_lines):
+        wm = _WO_LINE_RE.match(line)
+        if wm:
+            current_wo = int(wm.group("wo"))
+            cached_info = cached_blocks.get(current_wo)
+            audit_st = wo_audit.get(current_wo)
+            should_be_done = (
+                audit_st == "done"
+                or (cached_info is not None and cached_info["done"] and audit_st != "open")
+            )
+            if should_be_done and not new_blocks[current_wo]["done"]:
+                patched_lines[i] = _CACHE_OPEN_MARK_RE.sub("✅ DONE", line, count=1)
+            continue
+        if line.strip().startswith("#"):
+            current_wo = None
+            continue
+        if current_wo is not None:
+            sm = _CACHE_STEP_RE.match(line)
+            if sm and sm.group("mark") == " ":
+                step_txt = sm.group("text").strip()
+                step_key = step_txt.casefold()
+                cached_steps = {
+                    t.casefold(): d
+                    for d, t, _raw in (cached_blocks.get(current_wo, {}).get("steps") or [])
+                }
+                is_cached_done = bool(cached_steps.get(step_key))
+                is_unique_step = len(step_wos.get(step_key, set())) <= 1
+                explicit_task: str | None = None
+                for entry_wo, q, st in reversed(task_entries):
+                    if not q or q not in step_key:
+                        continue
+                    if entry_wo is not None:
+                        if entry_wo == current_wo:
+                            explicit_task = st
+                            break
+                    elif is_cached_done or is_unique_step:
+                        explicit_task = st
+                        break
+                if explicit_task == "done" or (is_cached_done and explicit_task != "open"):
+                    bracket_pos = line.find("[ ]")
+                    if bracket_pos != -1:
+                        patched_lines[i] = line[:bracket_pos] + "[x]" + line[bracket_pos + 3:]
+
+    result_body = "\n".join(patched_lines)
+    if new_body.endswith("\n") and not result_body.endswith("\n"):
+        result_body += "\n"
+
+    # 2. Rescue completely missing Work Order blocks (including checklist steps)
+    rescued_blocks: list[tuple[int, str]] = []
+    for wo_num, info in cached_blocks.items():
+        if wo_num not in present_wos:
+            present_wos.add(wo_num)
+            rescued_blocks.append((wo_num, info["block"]))
+
+    if not rescued_blocks:
+        return result_body
+
+    rescued_text = "\n\n".join(block for _, block in sorted(rescued_blocks))
+    return f"{result_body.rstrip()}\n\n{rescued_text}\n"
 
 
 def _cache_path(root: Path, name: str) -> Path:

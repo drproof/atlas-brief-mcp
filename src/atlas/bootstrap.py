@@ -51,8 +51,9 @@ def iter_source_files(root: Path):
 SKIP_KEYWORDS = {
     # Control structures — look like methods, but aren't
     "if", "for", "while", "switch", "catch", "else", "do", "try", "with",
+    "match", "loop", "where", "type",
     "return", "function", "constructor", "super", "this", "new", "typeof",
-    "class", "struct", "interface", "enum", "record", "trait", "impl",
+    "class", "struct", "interface", "protocol", "enum", "record", "trait", "impl",
     "namespace", "package", "import", "using", "throw", "await", "yield",
     "nameof", "sizeof", "lock", "synchronized", "main",
     # Godot virtuals — called by the engine
@@ -62,6 +63,11 @@ SKIP_KEYWORDS = {
     # Framework hooks called by the framework
     "render", "ngOnInit", "ngOnDestroy", "componentDidMount", "componentWillUnmount",
 }
+
+_ANGLE_ATOM = r"(?:[^<>=\-\n]|-(?!>)|=(?!>)|->|=>)"
+_TYPE_PARAMS = rf"(?:<(?:{_ANGLE_ATOM}|<{_ANGLE_ATOM}*>)*>)"
+_PAREN_ATOM = r"(?:[^()\n]|\([^()\n]*\))"
+
 DEF_PATTERNS = (
     # GDScript / Python / Rust / Swift / Kotlin:
     # [modifiers...] (func|def|fn|fun) [<TypeParams>] name [<TypeParams>] (
@@ -70,40 +76,82 @@ DEF_PATTERNS = (
         r"|static|async|suspend|inline|override|mutating|nonmutating|final|unsafe|const"
         r"|extern(?:[ \t]+\"[^\"]*\")?|operator|tailrec)[ \t]+)*"
         r"(?:func|def|fn|fun)[ \t]+"
-        r"(?:<[^>\n]+>[ \t]+)*"
-        r"(?P<name>[A-Za-z_]\w*)[ \t]*(?:<[^>\n]+>)?[ \t]*\(",
+        rf"(?:{_TYPE_PARAMS}[ \t]+)*"
+        rf"(?P<name>[A-Za-z_]\w*)[ \t]*(?:{_TYPE_PARAMS})?[ \t]*\(",
         re.MULTILINE,
     ),
     # Go functions & receiver methods: func (r *Recv) Name[T any](
     re.compile(
-        r"^[ \t]*func[ \t]+(?:\([^)\n]+\)[ \t]+)?(?P<name>[A-Za-z_]\w*)[ \t]*(?:\[[^\]\n]+\])?[ \t]*\(",
+        r"^[ \t]*func[ \t]+(?:\([^)\n]+\)[ \t]+)?(?P<name>[A-Za-z_]\w*)[ \t]*(?:\[(?:[^\[\]\n]|\[[^\[\]\n]*\])+\])?[ \t]*\(",
         re.MULTILINE,
     ),
     # JS/TS: [export [default]] [async] function name[<T>]( — the closing parenthesis
     # may be on a later line (multi-line TS signatures).
     re.compile(
         r"^[ \t]*(?:export[ \t]+(?:default[ \t]+)?)?(?:async[ \t]+)?function[ \t]*\*?[ \t]*"
-        r"(?P<name>[A-Za-z_$][\w$]*)[ \t]*(?:<[^>\n]+>)?[ \t]*\(",
+        rf"(?P<name>[A-Za-z_$][\w$]*)[ \t]*(?:{_TYPE_PARAMS})?[ \t]*\(",
         re.MULTILINE,
     ),
-    # JS/TS: [export] const name = [Wrapper<…>(] [async] (…) =>  |  = function(
-    # The wrapper part covers React.memo(, forwardRef<…>( and similar higher-order
-    # components — otherwise the complex UI components are missed.
+    # JS/TS: [export] const name = [Wrapper<…>(] [async] ((…) => | arg => | multiline (…) => | function()
     re.compile(
         r"^[ \t]*(?:export[ \t]+(?:default[ \t]+)?)?(?:const|let|var)[ \t]+"
         r"(?P<name>[A-Za-z_$][\w$]*)[ \t]*(?::[^=\n]+)?=[ \t]*"
-        r"(?:[A-Za-z_$][\w$.]*(?:<[^>\n]*>)?\([ \t]*)?"
-        r"(?:async[ \t]+)?(?:\([^)\n]*\)[^\n=]*?=>|function[ \t]*\()",
+        rf"(?:[A-Za-z_$][\w$.]*(?:{_TYPE_PARAMS})?\([ \t]*)?"
+        r"(?:async[ \t]+)?(?:"
+        rf"\({_PAREN_ATOM}*\)[^\n=]*?=>"
+        r"|[A-Za-z_$][\w$]*[ \t]*=>"
+        rf"|\([ \t]*\n(?:[ \t]*[^\s()]{_PAREN_ATOM}*\n|[ \t]*\n){{1,12}}[ \t]*\)[^\n=]*?=>"
+        r"|function[ \t]*\*?[ \t]*\("
+        r")",
+        re.MULTILINE,
+    ),
+    # GDScript 4 callable / lambda property binding: [@onready] var name [: Callable] := func(
+    re.compile(
+        r"^[ \t]*(?:@onready[ \t]+)?var[ \t]+(?P<name>[A-Za-z_]\w*)[ \t]*(?::[^=\n]*)?=[ \t]*func[ \t]*\(",
+        re.MULTILINE,
+    ),
+    # JS/TS class & interface methods with explicit modifier(s):
+    # [public|private|protected|readonly|override|static|async|abstract|get|set]+ [*] name[<T>](
+    re.compile(
+        r"^[ \t]*(?:(?:public|private|protected|readonly|override|static|async|abstract|get|set)[ \t]+)+"
+        rf"(?:\*[ \t]*)?(?P<name>[A-Za-z_$][\w$]*)[ \t]*(?:{_TYPE_PARAMS})?[ \t]*\(",
+        re.MULTILINE,
+    ),
+    # TypeScript unmodified class/object methods with type annotations or 0-arg `name() {`:
+    # e.g. `  resolveTurnOrder(units: Unit[]): Unit[] {` or multiline `  resolve(\n    u: Unit,\n  ): void {`
+    re.compile(
+        rf"^[ \t]+(?:\*[ \t]*)?(?P<name>[A-Za-z_$][\w$]*)[ \t]*(?:{_TYPE_PARAMS})?[ \t]*"
+        r"(?:"
+        r"\([ \t]*\)[ \t]*(?::[ \t]*[^\n{=>;]*[^\s{=>;])?[ \t]*\{[ \t]*$"
+        rf"|\([^():\n]*:[ \t]*{_PAREN_ATOM}+\)[ \t]*(?::[ \t]*[^\n{{=>;]*[^\s{{=>;])?[ \t]*(?:\{{|[ \t]*;$)"
+        rf"|\({_PAREN_ATOM}*\)[ \t]*:[ \t]*[^\n{{=>;]*[^\s{{=>;][ \t]*\{{[ \t]*$"
+        rf"|\([ \t]*\n(?:[ \t]+[^\s()]{_PAREN_ATOM}*\n|[ \t]*\n){{1,12}}[ \t]*\)[ \t]*(?::[ \t]*[^\n{{=>;]*[^\s{{=>;])?[ \t]*\{{"
+        r")",
         re.MULTILINE,
     ),
     # C# / Java typed methods: require at least one access/method modifier + return type + Name(
     re.compile(
         r"^[ \t]*(?:(?:public|private|protected|internal|static|virtual|override|abstract"
         r"|async|sealed|final|synchronized|extern|unsafe|partial|readonly)[ \t]+)+"
-        r"[A-Za-z_][\w.<>,\[\]\?]*[ \t]+"
-        r"(?P<name>[A-Za-z_]\w*)[ \t]*(?:<[^>\n]+>)?[ \t]*\(",
+        rf"[A-Za-z_][\w.,\[\]\?]*(?:{_TYPE_PARAMS}[\w.\[\]\?]*)?[ \t]+"
+        rf"(?P<name>[A-Za-z_]\w*)[ \t]*(?:{_TYPE_PARAMS})?[ \t]*\(",
         re.MULTILINE,
     ),
+)
+
+JS_TS_EXTS = {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}
+_JS_PARAM = (
+    r"(?:(?:\.\.\.)?[A-Za-z_$][\w$]*|\{[^{};\n]*\}|\[[^\[\];\n]*\])"
+    r"(?:[ \t]*=[ \t]*[^,)\n]*[^\s,)])?"
+)
+# Unmodified untyped ES6 class/object methods (`  computeDamage(attacker, defender) {`):
+# restricted to JS/TS extensions when known so Kotlin trailing-lambda calls (`withLock(m) {`)
+# are never misclassified as definitions.
+JS_TS_BARE_METHOD_RE = re.compile(
+    rf"^[ \t]+(?:\*[ \t]*)?(?P<name>[A-Za-z_$][\w$]*)[ \t]*\("
+    rf"[ \t]*{_JS_PARAM}(?:[ \t]*,[ \t]*{_JS_PARAM})*[ \t]*,?"
+    r"[ \t]*\)[ \t]*\{[ \t]*$",
+    re.MULTILINE,
 )
 
 # Files mounted externally by a bundler or router: `export default`
@@ -120,46 +168,176 @@ ENTRY_FILES = {
 CORE_SYMBOL_MIN_LINES = 8
 
 
-def _iter_defs(text: str):
-    """Yield (name, start_line, def_line) for all recognized functions."""
+def iter_def_patterns(suffix: str = ""):
+    """Return applicable definition regexes for a source file extension."""
+    ext = (suffix or "").lower()
+    if not ext:
+        return (*DEF_PATTERNS, JS_TS_BARE_METHOD_RE)
+    if ext == ".py":
+        return (DEF_PATTERNS[0],)
+    if ext == ".gd":
+        return (DEF_PATTERNS[0], DEF_PATTERNS[4])
+    if ext in {".rs", ".kt", ".swift"}:
+        return (DEF_PATTERNS[0],)
+    if ext == ".go":
+        return (DEF_PATTERNS[0], DEF_PATTERNS[1])
+    if ext in {".cs", ".java"}:
+        return (DEF_PATTERNS[7],)
+    if ext in JS_TS_EXTS:
+        return (DEF_PATTERNS[2], DEF_PATTERNS[3], DEF_PATTERNS[5], DEF_PATTERNS[6], JS_TS_BARE_METHOD_RE)
+    return DEF_PATTERNS
+
+
+def _iter_defs(text: str, suffix: str = ""):
+    """Yield (name, start_line, def_line) for all recognized functions outside comments/docstrings."""
+    from .code import _strip_comments_and_docstrings
+
+    raw_lines = text.splitlines()
+    clean_text = "\n".join(_strip_comments_and_docstrings(text, suffix))
     seen: set[tuple[str, int]] = set()
-    for pattern in DEF_PATTERNS:
-        for match in pattern.finditer(text):
+    for pattern in iter_def_patterns(suffix):
+        for match in pattern.finditer(clean_text):
             name = match.group("name")
             if not name or name in SKIP_KEYWORDS:
                 continue
-            start = text.count("\n", 0, match.start())
+            start = clean_text.count("\n", 0, match.start())
             key = (name, start)
             if key in seen:
                 continue
             seen.add(key)
-            line_start = text.rfind("\n", 0, match.start()) + 1
-            line_end = text.find("\n", match.start())
-            line = text[line_start: line_end if line_end != -1 else len(text)]
+            line = raw_lines[start] if start < len(raw_lines) else ""
             yield name, start, line
 
 
-def _func_body_end(lines: list[str], start: int) -> int:
+def _advance_triple_quote(line: str, active: str | None, suffix: str = "") -> str | None:
+    """Track unescaped `\"\"\"`, `'''`, and multiline `` ` `` literal state across a line."""
+    is_go = (suffix or "").lower() == ".go"
+    idx = 0
+    n = len(line)
+    while idx < n:
+        ch = line[idx]
+        if active is not None:
+            if ch == "\\" and not (active == "`" and is_go):
+                idx += 2
+                continue
+            if line.startswith(active, idx):
+                step = len(active)
+                active = None
+                idx += step
+                continue
+            idx += 1
+            continue
+        if ch == "\\":
+            idx += 2
+            continue
+        if ch == "#" or line.startswith("//", idx):
+            break
+        if line.startswith('"""', idx) or line.startswith("'''", idx):
+            active = line[idx: idx + 3]
+            idx += 3
+            continue
+        if ch == "`":
+            active = "`"
+            idx += 1
+            continue
+        if ch in ('"', "'"):
+            quote_ch = ch
+            idx += 1
+            while idx < n:
+                if line[idx] == "\\":
+                    idx += 2
+                    continue
+                if line[idx] == quote_ch:
+                    idx += 1
+                    break
+                idx += 1
+            continue
+        idx += 1
+    return active
+
+
+def _paren_delta(line: str) -> int:
+    """Return net `(` minus `)` outside quotes/comments on a single line."""
+    delta = 0
+    in_quote: str | None = None
+    idx = 0
+    while idx < len(line):
+        ch = line[idx]
+        if ch == "\\":
+            idx += 2
+            continue
+        if in_quote:
+            if ch == in_quote:
+                in_quote = None
+            idx += 1
+            continue
+        if ch == "#" or line.startswith("//", idx):
+            break
+        if ch in ('"', "'", "`"):
+            in_quote = ch
+        elif ch == "(":
+            delta += 1
+        elif ch == ")":
+            delta -= 1
+        idx += 1
+    return delta
+
+
+def _func_body_end(lines: list[str], start: int, suffix: str = "") -> int:
     """Return the last line of the function body starting at `start` (0-based).
 
-    The reference is the indentation of the **definition line**, not column 0. The
-    earlier column-0 check only worked for top-level code: inside a Python class
-    no method starts at column 0, so every method ran to the end of the entire
-    class and was treated as arbitrarily long.
+    Handles multi-line signatures (`def foo(\\n a: int\\n) -> bool:`), Rust `where`
+    clauses, and unindented text inside `\"\"\"...\"\"\"` or `` `...` `` multiline strings.
     """
     line = lines[start]
     def_indent = len(line) - len(line.lstrip())
     end = start
+    in_triple = _advance_triple_quote(line, None, suffix=suffix)
+    paren_depth = max(0, _paren_delta(line))
+    sig_closed = paren_depth == 0 and line.rstrip().endswith((":", "{"))
+    in_where = False
+
     for offset in range(start + 1, len(lines)):
         current = lines[offset]
+        if in_triple is not None:
+            end = offset
+            in_triple = _advance_triple_quote(current, in_triple, suffix=suffix)
+            continue
         if not current.strip():
             continue
         indent = len(current) - len(current.lstrip())
         stripped = current.strip()
+
+        if paren_depth > 0:
+            end = offset
+            paren_depth = max(0, paren_depth + _paren_delta(current))
+            if paren_depth == 0 and stripped.endswith((":", "{")):
+                sig_closed = True
+            in_triple = _advance_triple_quote(current, in_triple, suffix=suffix)
+            continue
+
+        if in_where and not sig_closed:
+            end = offset
+            if stripped.endswith("{") or stripped == "{":
+                sig_closed = True
+                in_where = False
+            continue
+
         if indent <= def_indent:
+            if not sig_closed and (
+                stripped.startswith((")", "{", "->", "where ", "where:"))
+                or stripped in ("{", "):", "where")
+            ):
+                end = offset
+                if stripped == "where" or stripped.startswith(("where ", "where:")):
+                    if stripped.endswith("{"):
+                        sig_closed = True
+                    else:
+                        in_where = True
+                elif stripped.endswith((":", "{")):
+                    sig_closed = True
+                continue
             # Continuation of a multi-line signature — the body starts after it.
-            # `): RevenueResult {`, `) -> dict:`, `) => {`, or Allman style with
-            # `{` on its own line.
             if stripped.startswith(")") or stripped in ("{", "):"):
                 end = offset
                 continue
@@ -167,7 +345,9 @@ def _func_body_end(lines: list[str], start: int) -> int:
             if stripped in ("}", "};", "});") and indent == def_indent:
                 end = offset
             break
+        sig_closed = True
         end = offset
+        in_triple = _advance_triple_quote(current, in_triple, suffix=suffix)
     return end
 
 
@@ -195,7 +375,7 @@ def _has_decorator(lines: list[str], start: int) -> bool:
     return False
 
 
-def _core_symbols(text: str, limit: int = 12) -> list[str]:
+def _core_symbols(text: str, limit: int = 12, suffix: str = "") -> list[str]:
     """Return the largest functions in a file — not the first ones.
 
     The first twelve `func` lines of a GDScript file are `_ready`, `get_int`,
@@ -205,8 +385,8 @@ def _core_symbols(text: str, limit: int = 12) -> list[str]:
     """
     lines = text.splitlines()
     sized: list[tuple[int, str]] = []
-    for name, start, _line in _iter_defs(text):
-        length = _func_body_end(lines, start) - start + 1
+    for name, start, _line in _iter_defs(text, suffix=suffix):
+        length = _func_body_end(lines, start, suffix=suffix) - start + 1
         if length < CORE_SYMBOL_MIN_LINES:
             continue
         sized.append((length, name))
@@ -279,19 +459,21 @@ def scan_repository(root: Path) -> dict:
         bucket["tokens"] += tokens
         # Symbols of the largest file first, so the domain list shows real logic
         # rather than twelve getters from a random file.
-        for name in _core_symbols(text, limit=6):
+        for name in _core_symbols(text, limit=6, suffix=path.suffix):
             if name not in bucket["symbols"] and len(bucket["symbols"]) < 12:
                 bucket["symbols"].append(name)
 
+    texts = {rel: text for rel, text, _t in sources}
     for bucket in domains.values():
         bucket["files"].sort(key=lambda item: -item["tokens"])
         bucket["subproject"] = _detect_subproject(bucket["root"])
         # Core symbols from the largest files in the domain, not the first ones:
         # a 60-line helper file does not contain core logic.
-        texts = {rel: text for rel, text, _t in sources}
         symbols: list[str] = []
         for item in bucket["files"][:5]:
-            for name in _core_symbols(texts.get(item["path"], ""), limit=4):
+            for name in _core_symbols(
+                texts.get(item["path"], ""), limit=4, suffix=Path(item["path"]).suffix
+            ):
                 if name not in symbols:
                     symbols.append(name)
         bucket["symbols"] = symbols[:12]
@@ -336,7 +518,7 @@ def _find_unwired(sources: list[tuple[str, str, int]]) -> list[dict]:
     for rel, text, _tokens in sources:
         lines = text.splitlines()
         is_entry = Path(rel).name.lower() in ENTRY_FILES
-        for name, start, def_line in _iter_defs(text):
+        for name, start, def_line in _iter_defs(text, suffix=Path(rel).suffix):
             if name in seen or len(name) < 4:
                 continue
             # Test conventions (pytest, unittest, JS test runners)

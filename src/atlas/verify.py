@@ -232,7 +232,7 @@ def regressions(root, work_orders: list[dict]) -> list[dict]:
     """
     mapping = load_wo_symbols(root)
     done = {item["wo"]: item for item in work_orders
-            if str(item.get("status", "")).lower() in {"done", "erledigt"}}
+            if str(item.get("status", "")).lower() in {"done", "erledigt", "abgeschlossen"}}
 
     findings: list[dict] = []
     for wo, symbols in sorted(mapping.items()):
@@ -262,7 +262,9 @@ def check_project(root, conn) -> dict:
     from . import status as status_mod
 
     root_path = Path(root)
-    items = json.loads(status_mod.status(conn)).get("work_orders", [])
+    items = list(status_mod.extract_work_orders(conn))
+    indexed_nums = {int(item["wo"]) for item in items if item.get("wo") is not None}
+    items.extend(status_mod._recover_unindexed_work_orders(root_path, indexed_nums))
     mapping = load_wo_symbols(root_path)
     reg = regressions(root_path, items)
 

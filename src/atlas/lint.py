@@ -14,8 +14,10 @@ LINE_WO_RE = re.compile(r"Work\s*Order\s*(\d+)", re.IGNORECASE)
 # Same markers that `status.py` recognizes as a status. If `DONE`/`TODO`/`OPEN`
 # were missing here, `lint` would flag a line as "missing status" even though
 # `status.py` reads it as completed.
-STATUS_RE = re.compile(r"✅|⬜|☑|☐|ERLEDIGT|OFFEN|\bDONE\b|\bTODO\b|\bOPEN\b",
-                       re.IGNORECASE)
+STATUS_RE = re.compile(
+    r"✅|⬜|☑|☐|🚧|\bERLEDIGT\b|\bABGESCHLOSSEN\b|\bOFFEN\b|\bAUSSTEHEND\b|\bDONE\b|\bTODO\b|\bOPEN\b|\bIN[\s_-]+PROGRESS\b",
+    re.IGNORECASE,
+)
 ESCAPED_RE = re.compile(r"\\[.\-_*\[\]#!|>~]")
 
 MAX_ISSUES = 200
@@ -114,6 +116,8 @@ def lint(conn: sqlite3.Connection, max_issues: int = MAX_ISSUES,
                 "Navigation/table-of-contents line competes with topic sections")
 
         for line in body.splitlines():
+            if re.match(r"^\s*[-*]\s*\[[ xX]\]", line):
+                continue
             match = LINE_WO_RE.search(line)
             if not match:
                 continue

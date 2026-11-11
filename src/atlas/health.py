@@ -64,16 +64,28 @@ def _recent(root, limit: int = 20) -> list[dict]:
     return entries
 
 
+def _norm_wo(raw) -> int | str | None:
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return str(raw)
+
+
 def _entry_key(entry: dict) -> tuple:
     """Return the key by which a later success clears an earlier failure.
 
-    Work order writes have a number. Sheet writes do not — previously they all
-    bucketed under `wo=None`, so any subsequent sheet write silently cleared
-    the warning for a shifted row.
+    Work order writes have a number; checklist step writes carry `task`; sheet
+    writes carry sheet/tab/row keys so distinct targets never mask each other.
     """
     tool = str(entry.get("tool") or "write")
-    if entry.get("wo") is not None:
-        return ("wo", entry["wo"])
+    wo_val = _norm_wo(entry.get("wo"))
+    task_val = str(entry.get("task") or "").strip().lower()
+    if task_val:
+        return ("task", wo_val, task_val)
+    if wo_val is not None:
+        return ("wo", wo_val)
     return (
         tool,
         entry.get("sheet") or "",
@@ -85,8 +97,15 @@ def _entry_key(entry: dict) -> tuple:
 def _entry_label(entry: dict) -> str:
     """Return a human-readable label — never 'WO None'."""
     tool = entry.get("tool") or "write"
-    if entry.get("wo") is not None:
-        return f"{tool} WO {entry['wo']}"
+    wo_val = _norm_wo(entry.get("wo"))
+    task_raw = str(entry.get("task") or "").strip()
+    if task_raw:
+        short_task = task_raw[:40]
+        if wo_val is not None:
+            return f"{tool} WO {wo_val} · {short_task}"
+        return f"{tool} {short_task}"
+    if wo_val is not None:
+        return f"{tool} WO {wo_val}"
     where = " · ".join(
         str(part) for part in (entry.get("tab"), entry.get("key") or entry.get("row"))
         if part

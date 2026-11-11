@@ -112,12 +112,14 @@ def _symbol_status_lines(
     symbols: list[str],
     current_wo: int | None = None,
     conn=None,
+    guards_map: dict | None = None,
 ) -> list[str]:
     """Check current definition and caller status for target symbols across the codebase."""
     from . import verify
 
     result = verify.check(root, symbols[:8])
-    guards_map = verify.symbol_guards(root, conn=conn)
+    if guards_map is None:
+        guards_map = verify.symbol_guards(root, conn=conn)
     lines: list[str] = []
     for item in result.get("symbols", []):
         sym = item["symbol"]
@@ -145,6 +147,7 @@ def _handoff_context(
     files: list[str] | None = None,
     recorded_syms: list[str] | None = None,
     conn=None,
+    guards_map: dict | None = None,
 ) -> list[str]:
     """Build a compact multi-agent handoff block: recent audit log actions, working-tree edits, and protected symbols."""
     import subprocess
@@ -212,7 +215,8 @@ def _handoff_context(
         pass
 
     # 3. Protected symbols from earlier completed Work Orders in affected files
-    guards_map = verify.symbol_guards(root, conn=conn)
+    if guards_map is None:
+        guards_map = verify.symbol_guards(root, conn=conn)
     if guards_map and files:
         protected_hits: list[str] = []
         seen_syms: set[str] = set()
@@ -225,7 +229,7 @@ def _handoff_context(
             except OSError:
                 continue
             for sym, g_list in guards_map.items():
-                if sym in seen_syms or sym not in text:
+                if sym in seen_syms or sym not in text or not re.search(rf"\b{re.escape(sym)}\b", text):
                     continue
                 other_wos = [
                     g["wo"] for g in g_list
@@ -373,8 +377,14 @@ def build(
 
     wo_steps = (wo_item or {}).get("steps") or []
     recorded_syms = verify.load_wo_symbols(root).get(int(work_order), []) if work_order else []
+    shared_guards = verify.symbol_guards(root, conn=conn) if (files or recorded_syms) else {}
     handoff_lines = _handoff_context(
-        root, work_order=work_order, files=files, recorded_syms=recorded_syms, conn=conn
+        root,
+        work_order=work_order,
+        files=files,
+        recorded_syms=recorded_syms,
+        conn=conn,
+        guards_map=shared_guards,
     )
     if handoff_lines:
         lines.extend([
@@ -414,7 +424,13 @@ def build(
         ])
 
     if recorded_syms:
-        sym_lines = _symbol_status_lines(root, recorded_syms, current_wo=work_order, conn=conn)
+        sym_lines = _symbol_status_lines(
+            root,
+            recorded_syms,
+            current_wo=work_order,
+            conn=conn,
+            guards_map=shared_guards,
+        )
         if sym_lines:
             lines.extend([
                 "### Target symbols (wiring gate)",
@@ -479,8 +495,14 @@ def build_queue(
             "Create new ones with `atlas plan \"<topic>\" --step \"...\"`._\n"
         )
 
+    budget = max(1200, min(int(max_chars), 24000))
     sym_map = verify.load_wo_symbols(root)
-    wo_numbers = ", ".join(f"WO {item['wo']}" for item in open_orders)
+    shared_guards = verify.symbol_guards(root, conn=conn) if sym_map else {}
+
+    shown_nums = [f"WO {item['wo']}" for item in open_orders[:12]]
+    if len(open_orders) > 12:
+        shown_nums.append(f"+{len(open_orders) - 12} more")
+    wo_numbers = ", ".join(shown_nums)
     lines: list[str] = [
         f"# Work Order Queue (`atlas next+`): {len(open_orders)} open ({wo_numbers})",
         "",
@@ -491,15 +513,30 @@ def build_queue(
         "",
     ]
 
-    per_wo_budget = max(800, max_chars // max(1, len(open_orders)))
+    rules = _load_rules(root) if include_rules else ""
+    rules_block: list[str] = []
+    if rules:
+        trimmed_rules = rules[: max(300, budget // 4)].rstrip()
+        if len(trimmed_rules) < len(rules):
+            trimmed_rules += "\n_… guardrails truncated._"
+        rules_block = ["## Guardrails (in force for all Work Orders)", "", trimmed_rules, ""]
+    rules_reserve = sum(len(r) + 1 for r in rules_block)
+
+    per_wo_budget = max(250, min(SECTION_CHARS, (budget - rules_reserve) // max(1, min(len(open_orders), 6))))
+    overflow: list[tuple[int, dict]] = []
+
     for idx, item in enumerate(open_orders, start=1):
+        current_len = sum(len(line) + 1 for line in lines)
+        if idx > 1 and current_len + rules_reserve + 320 >= budget:
+            overflow = list(enumerate(open_orders[idx - 1 :], start=idx))
+            break
+
         wo_num = item["wo"]
         title = item["title"] or f"Work Order {wo_num}"
         steps = item.get("steps") or []
         done_cnt = sum(1 for s in steps if s.get("done"))
         state_badge = "🚧 IN PROGRESS" if 0 < done_cnt < len(steps) else "⬜ OPEN"
-        lines.append(f"## {idx}. Work Order {wo_num} — {state_badge}: {title}")
-        lines.append("")
+        card: list[str] = [f"## {idx}. Work Order {wo_num} — {state_badge}: {title}", ""]
 
         # Locate spec section (either explicit spec_anchor or top BM25 hit)
         spec_anchor = item.get("spec_anchor") or ""
@@ -526,32 +563,40 @@ def build_queue(
                     rel = found.group(0).replace("res://", "")
                     if rel not in files:
                         files.append(rel)
-                lines.append(
+                card.append(
                     f"**Spec section:** `{spec_anchor}` (*{payload['path']}:{payload['line']} — {payload['heading']}*)"
                 )
-                lines.append("")
-                lines.append(payload["body"])
-                lines.append("")
+                card.append("")
+                card.append(payload["body"])
+                card.append("")
 
         if files:
-            lines.append("**Affected files:** " + ", ".join(f"`{f}`" for f in files))
-            lines.append("")
+            card.append("**Affected files:** " + ", ".join(f"`{f}`" for f in files))
+            card.append("")
 
         if steps:
-            lines.append(f"**Steps ({done_cnt}/{len(steps)} done):**")
+            card.append(f"**Steps ({done_cnt}/{len(steps)} done):**")
             for step in steps:
                 mark = "x" if step.get("done") else " "
-                lines.append(f"- [{mark}] {step['text']}")
-            lines.append("")
+                card.append(f"- [{mark}] {step['text']}")
+            card.append("")
 
         recorded_syms = sym_map.get(int(wo_num), [])
         if recorded_syms:
-            lines.append("**Target symbols (wiring gate):**")
-            lines.extend(_symbol_status_lines(root, recorded_syms, current_wo=wo_num, conn=conn))
-            lines.append("")
+            card.append("**Target symbols (wiring gate):**")
+            card.extend(
+                _symbol_status_lines(
+                    root,
+                    recorded_syms,
+                    current_wo=wo_num,
+                    conn=conn,
+                    guards_map=shared_guards,
+                )
+            )
+            card.append("")
 
         sym_flag = f" --verify-symbols {','.join(recorded_syms)}" if recorded_syms else ""
-        lines.extend([
+        card.extend([
             f"**Checkoff for Work Order {wo_num}:**",
             "```",
             *([f'atlas set-status --task "<step substring>" --status done'] if steps else []),
@@ -560,10 +605,37 @@ def build_queue(
             "",
         ])
 
-    if include_rules:
-        rules = _load_rules(root)
-        if rules:
-            lines.extend(["## Guardrails (in force for all Work Orders)", "", rules, ""])
+        card_len = sum(len(c) + 1 for c in card)
+        if idx > 1 and current_len + card_len + rules_reserve + 180 > budget:
+            overflow = list(enumerate(open_orders[idx - 1 :], start=idx))
+            break
+        lines.extend(card)
 
-    return "\n".join(lines)
+    if overflow:
+        lines.extend(["## Queued Next (compact summary)", ""])
+        omitted = 0
+        for q_idx, q_item in overflow:
+            q_wo = q_item["wo"]
+            q_title = (q_item["title"] or f"Work Order {q_wo}")[:70]
+            q_steps = q_item.get("steps") or []
+            q_done = sum(1 for s in q_steps if s.get("done"))
+            q_badge = "🚧" if 0 < q_done < len(q_steps) else "⬜"
+            summary_line = f"- {q_idx}. **WO {q_wo}** {q_badge}: {q_title} ({q_done}/{len(q_steps)} steps)"
+            cur = sum(len(line) + 1 for line in lines)
+            if cur + len(summary_line) + rules_reserve + 110 > budget:
+                omitted = len(overflow) - (q_idx - overflow[0][0])
+                break
+            lines.append(summary_line)
+        if omitted > 0:
+            lines.append(f"- _… +{omitted} more open Work Order(s) queued; re-run `atlas next+` after completing above._")
+        lines.append("")
+
+    if rules_block:
+        lines.extend(rules_block)
+
+    text = "\n".join(lines)
+    if len(text) > budget:
+        suffix = "\n\n_… queue truncated._\n"
+        text = text[: max(200, budget - len(suffix))].rstrip() + suffix
+    return text
 

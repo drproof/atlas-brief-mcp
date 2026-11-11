@@ -6,7 +6,15 @@ import re
 from pathlib import Path
 
 _FOLD = str.maketrans({
-    "ä": "a", "ö": "o", "ü": "u", "ß": "ss",
+    "ä": "a", "ö": "o", "ü": "u", "ß": "ss", "ẞ": "ss",
+    "Ä": "a", "Ö": "o", "Ü": "u",
+    "á": "a", "à": "a", "é": "e", "è": "e", "í": "i", "ó": "o", "ú": "u",
+})
+
+# SQLite FTS5 `unicode61 remove_diacritics 2` strips umlauts (`ä -> a`) but keeps
+# literal `ß` (`"Größe" -> "große"`). Retain `ß` as an additional search variant.
+_FOLD_FTS_ESZETT = str.maketrans({
+    "ä": "a", "ö": "o", "ü": "u", "ẞ": "ß",
     "Ä": "a", "Ö": "o", "Ü": "u",
     "á": "a", "à": "a", "é": "e", "è": "e", "í": "i", "ó": "o", "ú": "u",
 })
@@ -67,7 +75,10 @@ def load_aliases(path) -> int:
 def aliases() -> dict[str, list[str]]:
     return _ALIASES
 
-TOKEN_RE = re.compile(r"[A-Za-z0-9ÄÖÜäöüß_]+(?:-[A-Za-z0-9]+)*")
+
+TOKEN_RE = re.compile(r"[A-Za-z0-9ÄÖÜäöüßẞ_]+(?:-[A-Za-z0-9ÄÖÜäöüßẞ_]+)*")
+_CAMEL_BOUNDARY_1 = re.compile(r"([a-z0-9äöüß])([A-ZÄÖÜ])")
+_CAMEL_BOUNDARY_2 = re.compile(r"([A-ZÄÖÜ]+)([A-ZÄÖÜ][a-zäöüß])")
 
 # Question and filler words that are virtually useless as GDD search terms.
 # German **and** English: agents often ask in English ("where is the combat
@@ -86,51 +97,137 @@ STOPWORDS = {
     "das", "der", "die", "den", "dem", "des", "ein", "eine", "einen", "einem", "einer",
     "und", "oder", "aber", "auch", "noch", "nur", "so", "wie", "was", "wer", "wann", "warum",
     "ist", "sind", "war", "waren", "wird", "werden", "hat", "haben", "gibt", "geben",
-    "in", "im", "an", "am", "auf", "aus", "bei", "mit", "nach", "von", "vom", "zu", "zum",
-    "zur", "für", "fuer", "über", "ueber", "unter", "vor", "durch", "gegen", "ohne", "um",
+    "im", "am", "auf", "aus", "bei", "mit", "nach", "von", "vom", "zu", "zum",
+    "zur", "für", "fuer", "fur", "über", "ueber", "uber", "unter", "vor", "durch", "gegen", "ohne", "um",
     "welche", "welcher", "welches", "welchem", "welchen",
     "datei", "dateien", "dokument", "dokumente", "info", "infos", "information", "informationen",
     "steht", "stehen", "befindet", "befinden", "liegt", "liegen", "geregelt", "beschrieben",
     "mir", "mich", "mein", "meine", "bitte", "mal", "denn", "doch", "kann", "kannst",
-    "soll", "sollte", "muss", "müssen", "hier", "dort", "dazu", "davon",
+    "soll", "sollte", "muss", "müssen", "mussen", "hier", "dort", "dazu", "davon",
 }
+
+# German-only function words that disambiguate bilingual homographs ("war", "die"):
+# in "Wo sind die Hitpoints?" -> "die" is a German article (drop);
+# in "Where is fog of war?" or "die roll" -> "war"/"die" are English GDD nouns (keep).
+_GERMAN_CONTEXT_WORDS = {
+    "wo", "wie", "wann", "warum", "ist", "sind", "waren", "wird", "werden",
+    "das", "der", "den", "dem", "des", "ein", "eine", "einen", "einem", "einer",
+    "und", "oder", "für", "fuer", "fur", "über", "ueber", "uber", "mit", "bei",
+    "nach", "vom", "zum", "zur", "welche", "welcher", "welches", "steht", "stehen",
+    "finde", "findet", "finden", "beschrieben", "geregelt",
+}
+_BILINGUAL_GDD_NOUNS = {"war", "die", "hat", "man"}
+_ENGLISH_DIE_NEIGHBORS = {"roll", "rolls", "pool", "pools", "hit", "damage"}
+_ENGLISH_MAN_HAT_NEIGHBORS = {"wizard", "iron", "last", "standing", "magic", "mage"}
 
 
 def fold(text: str) -> str:
     return text.translate(_FOLD).lower()
 
 
+def fold_fts(text: str) -> str:
+    """Fold diacritics like SQLite FTS5 `unicode61 remove_diacritics 2` (retaining `ß`)."""
+    return text.translate(_FOLD_FTS_ESZETT).lower()
+
+
+def _split_camel(raw_token: str) -> list[str]:
+    spaced = _CAMEL_BOUNDARY_2.sub(r"\1 \2", _CAMEL_BOUNDARY_1.sub(r"\1 \2", raw_token))
+    parts = spaced.split()
+    return parts if len(parts) > 1 else []
+
+
 def terms(query: str) -> list[str]:
     """Return search terms with stop words removed, folded, deduplicated, longest first."""
-    folded = fold(query)
-    raw = TOKEN_RE.findall(folded)
+    raw_tokens = TOKEN_RE.findall(query or "")
+    lowered_raw = {t.strip("-_").casefold() for t in raw_tokens if t.strip("-_")}
+    is_german = bool(lowered_raw & _GERMAN_CONTEXT_WORDS)
+
     keep: list[str] = []
     seen: set[str] = set()
-    for token in raw:
-        token = token.strip("-_")
-        if len(token) < 2:
-            continue
-        if token in STOPWORDS:
-            continue
-        # 'Gewölbestürmer-Perk' is a single token and never appears verbatim in a GDD.
-        # Also include its hyphen-split parts so the hyphen does not block matching.
-        candidates = [token]
-        if "-" in token:
-            candidates.extend(
-                part for part in token.split("-")
-                if len(part) >= 2 and part not in STOPWORDS
+
+    def _add(cand: str) -> None:
+        if len(cand) >= 2 and cand not in seen:
+            seen.add(cand)
+            keep.append(cand)
+
+    def _is_stop(tok: str, idx: int = -1, raw_tok_str: str = "") -> bool:
+        if tok in _BILINGUAL_GDD_NOUNS:
+            if not is_german:
+                return False
+            prev_low = raw_tokens[idx - 1].strip("-_").casefold() if idx > 0 else ""
+            next_low = (
+                raw_tokens[idx + 1].strip("-_").casefold()
+                if 0 <= idx + 1 < len(raw_tokens)
+                else ""
             )
+            if tok == "war" and (prev_low == "of" or (idx > 0 and raw_tok_str[:1].isupper())):
+                return False
+            if tok == "die" and (
+                prev_low in _ENGLISH_DIE_NEIGHBORS or next_low in _ENGLISH_DIE_NEIGHBORS
+            ):
+                return False
+            if tok in {"hat", "man"} and (
+                prev_low in _ENGLISH_MAN_HAT_NEIGHBORS
+                or next_low in _ENGLISH_MAN_HAT_NEIGHBORS
+                or (idx > 0 and raw_tok_str[:1].isupper())
+            ):
+                return False
+        return tok in STOPWORDS
+
+    for idx, raw_tok in enumerate(raw_tokens):
+        stripped_raw = raw_tok.strip("-_")
+        if len(stripped_raw) < 2:
+            continue
+        token = fold(stripped_raw)
+        if len(token) < 2 or _is_stop(token, idx, stripped_raw):
+            continue
+
+        candidates: list[str] = [token]
+        fts_tok = fold_fts(stripped_raw)
+        if fts_tok != token:
+            candidates.append(fts_tok)
+
+        if "-" in stripped_raw:
+            closed_raw = stripped_raw.replace("-", "").replace("_", "")
+            if len(closed_raw) >= 6:
+                closed_fold = fold(closed_raw)
+                candidates.append(closed_fold)
+                closed_fts = fold_fts(closed_raw)
+                if closed_fts != closed_fold:
+                    candidates.append(closed_fts)
+            for raw_part in stripped_raw.split("-"):
+                raw_part = raw_part.strip("_")
+                if not raw_part:
+                    continue
+                folded_part = fold(raw_part)
+                if len(folded_part) >= 2 and not _is_stop(folded_part, idx, raw_part):
+                    candidates.append(folded_part)
+                    fts_part = fold_fts(raw_part)
+                    if fts_part != folded_part:
+                        candidates.append(fts_part)
+                for camel_sub in _split_camel(raw_part):
+                    sub_folded = fold(camel_sub)
+                    if len(sub_folded) >= 2 and not _is_stop(sub_folded, idx, camel_sub):
+                        candidates.append(sub_folded)
+        else:
+            for camel_sub in _split_camel(stripped_raw):
+                sub_folded = fold(camel_sub)
+                if len(sub_folded) >= 2 and not _is_stop(sub_folded, idx, camel_sub):
+                    candidates.append(sub_folded)
+
         for candidate in candidates:
-            if candidate in seen:
-                continue
-            seen.add(candidate)
-            keep.append(candidate)
+            _add(candidate)
 
         # Project synonyms: 'hitpoints' should also match 'max_hp'.
         for alias in _ALIASES.get(token, []):
-            if len(alias) >= 2 and alias not in seen:
-                seen.add(alias)
-                keep.append(alias)
+            _add(alias)
+
+    if not keep:
+        for raw_tok in raw_tokens:
+            fallback = fold(raw_tok.strip("-_"))
+            if len(fallback) >= 3:
+                _add(fallback)
+
     keep.sort(key=len, reverse=True)
     return keep
 

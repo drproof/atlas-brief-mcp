@@ -146,7 +146,7 @@ def atlas_where(
 
     Behavior & Output:
     - Read-only, deterministic BM25 lookup against the local SQLite FTS5 index (auto-refreshed before query).
-    - Returns a JSON string with `{found: true, anchor, heading, path, line, alternatives}` when matched,
+    - Returns a JSON string with `{found: true, anchor, path, line, heading, breadcrumb, alternatives, read_with}` when matched,
       or `{found: false, hint}` when no section matches.
     """
     _, conn = _fresh()
@@ -202,8 +202,8 @@ def atlas_search(
 
     Behavior & Output:
     - Read-only lexical search via SQLite FTS5 (no embeddings; project synonyms come from `.atlas/aliases.yml`).
-    - Returns a JSON string `{query, count, hits: [{anchor, title, path, line, snippet, score}]}`.
-      Returns `count: 0` and an empty `hits` list if nothing matches.
+    - Returns a JSON string `{query, count, hits: [{anchor, doc_id, heading, breadcrumb, path, line, snippet, score}]}`.
+      Returns `count: 0`, an empty `hits` list, and `hint` if nothing matches.
     """
     _, conn = _fresh()
     return search_mod.search(conn, query, k=k, doc=doc)
@@ -259,8 +259,8 @@ def atlas_read(
 
     Behavior & Output:
     - Read-only lookup from the local documentation index.
-    - Returns a JSON string `{anchor, heading, path, lines, content, truncated, next_offset}`.
-      If the anchor does not exist, returns `{error, suggestions}` with the closest valid anchors.
+    - Returns a JSON string `{anchor, heading, breadcrumb, path, line, chars, total_chars, offset, truncated, body}`
+      (plus `next_offset` when `truncated: true`). If the anchor does not exist, returns `{error, suggestions, hint}`.
     """
     _, conn = _fresh()
     return search_mod.read(conn, anchor, offset=offset, max_chars=max_chars)
@@ -295,8 +295,8 @@ def atlas_outline(
 
     Behavior & Output:
     - Read-only, side-effect-free query of indexed document headings.
-    - Returns a JSON string `{doc, outline, truncated}` where `outline` lists each heading level,
-      title, and `anchor` ready for `atlas_read`.
+    - Returns a JSON string `{outline, docs, truncated}` (or `{outline, truncated: true, hint}` when trimmed),
+      where `outline` lists each heading level, title, and `[anchor]` ready for `atlas_read`.
     """
     _, conn = _fresh()
     return search_mod.outline(conn, doc=doc)
@@ -341,7 +341,7 @@ def atlas_tasks(
 
     Behavior & Output:
     - Read-only query over indexed Markdown checkboxes.
-    - Returns a JSON string `{status, owner, count, tasks: [{text, done, owner, tags, anchor, path, line}]}`.
+    - Returns a JSON string `{count, tasks: [{anchor, path, line, text, owner, tag, done}]}` (plus `truncated: true` when trimmed).
     """
     _, conn = _fresh()
     return search_mod.tasks(conn, status=status, owner=owner)
@@ -369,15 +369,15 @@ def atlas_links(
         ),
     ],
 ) -> str:
-    """Inspect a documentation section's relationships: linked source files (`implements`), tags, cross-references, and sibling sections.
+    """Inspect a documentation section's relationships: linked source files (`implements`), tags, and sibling sections.
 
     Use this tool to answer 'which code files implement this spec section?' or 'what other sections
-    reference or belong to the same document as this anchor?'.
+    belong to the same document as this anchor?'.
 
     Behavior & Output:
-    - Read-only lookup against the local section graph and frontmatter metadata (`implements`, `tags`).
-    - Returns a JSON string `{anchor, heading, path, implements: [...], tags: [...], outgoing_links: [...], incoming_links: [...], siblings: [...]}`
-      or `{error}` if the anchor is unknown.
+    - Read-only lookup against the local section index and frontmatter metadata (`implements`, `tags`).
+    - Returns a JSON string `{anchor, heading, path, implements, tags, siblings: [{anchor, heading}]}`
+      or `{error, suggestions, hint}` if the anchor is unknown.
     """
     _, conn = _fresh()
     return search_mod.links(conn, anchor)
@@ -633,7 +633,8 @@ def atlas_set_status(
             ge=1,
             description=(
                 "Existing Work Order number to update (positive integer, e.g. 8 for 'Work Order 8'). "
-                "Provide either `wo` or `task`."
+                "Provide `wo` to close/reopen a Work Order, `task` to toggle a checkbox step, or both "
+                "`wo` and `task` together to scope duplicate step text to a specific Work Order."
             ),
         ),
     ] = None,
@@ -661,7 +662,8 @@ def atlas_set_status(
             min_length=1,
             description=(
                 "Substring identifying a Markdown checkbox item (`- [ ] ...`) to toggle between "
-                "`- [ ]` ('open') and `- [x]` ('done') when `wo` is omitted (e.g. 'Balance damage formula')."
+                "`- [ ]` ('open') and `- [x]` ('done'). Combine with `wo` when multiple Work Orders "
+                "contain identical step text (e.g. 'Add unit tests')."
             ),
         ),
     ] = None,
@@ -981,13 +983,14 @@ def atlas_code_find(
 def atlas_lint() -> str:
     """Audit indexed documentation for structural and formatting problems that degrade retrieval quality.
 
-    Takes no parameters. Checks managed documentation for duplicate section anchors, empty headings,
-    oversized sections (>8,000 chars), Work Orders missing a status marker (`⬜`/`🚧`/`✅`), and broken
-    `implements:` code file paths. Use this tool after editing documentation or running `atlas init`.
+    Takes no parameters. Checks managed documentation for duplicate headings, heading level jumps,
+    empty headings/sections, oversized sections (>5,000 chars), TOC navigation lines, export escapes,
+    and Work Orders missing a status marker (`⬜`/`🚧`/`✅`). Use this tool after editing documentation
+    or running `atlas init`.
 
     Behavior & Output:
     - Read-only structural check; respects `.atlas/managed.json` (separating managed docs from legacy discovered docs).
-    - Returns a JSON string `{managed_issues: [...], discovered_hints: [...], clean: bool}` detailing each issue by file and line.
+    - Returns a JSON string `{ok, sections, counts, issues, managed_issues, discovered_issues, truncated}` detailing each issue by file and line.
     """
     from . import bootstrap, lint as lint_mod
 

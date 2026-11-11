@@ -376,10 +376,12 @@ def invalidate_sync_state(conn: sqlite3.Connection, drive_id: str) -> None:
 
     Needed when the Drive export lags behind a write: `sync` wrote the stale
     text into the cache, but recorded the new `modifiedTime` in `sync_state`.
-    Resetting `modified` to `''` forces the next `auto_sync` to re-export the
-    document while keeping `drive_id` registered in `known_sources(conn)`.
+    Resetting `modified` to `''` and clearing `last_sync_attempt` forces the
+    next `auto_sync` to re-export immediately while keeping `drive_id`
+    registered in `known_sources(conn)`.
     """
     conn.execute("UPDATE sync_state SET modified = '' WHERE drive_id = ?", (drive_id,))
+    conn.execute("DELETE FROM meta WHERE key = 'last_sync_attempt'")
     conn.commit()
 
 

@@ -16,17 +16,41 @@ import re
 from pathlib import Path
 
 STATUS_MARK = {"done": "✅ DONE", "open": "⬜ OPEN"}
+_STATUS_ALIASES = {
+    "done": "done",
+    "erledigt": "done",
+    "abgeschlossen": "done",
+    "open": "open",
+    "offen": "open",
+    "ausstehend": "open",
+    "todo": "open",
+    "in_progress": "open",
+    "in progress": "open",
+}
 SEPARATORS = ("—", "–", "-", ":")
 # Both spellings: German (existing documents) and English (new).
 _OLD_MARK_RE = re.compile(
-    r"^(?:✅\s*(?:ERLEDIGT|DONE)|⬜\s*(?:OFFEN|OPEN)|☑\s*(?:ERLEDIGT|DONE)"
-    r"|☐\s*(?:OFFEN|OPEN))\s*",
+    r"^(?:(?:✅|☑)\s*(?:ERLEDIGT|ABGESCHLOSSEN|DONE)"
+    r"|(?:⬜|☐)\s*(?:OFFEN|AUSSTEHEND|OPEN)"
+    r"|🚧\s*(?:IN\s+PROGRESS|OFFEN|OPEN)?"
+    r"|(?:✅|☑|⬜|☐|🚧))\s*",
     re.IGNORECASE,
 )
 _TASK_RE = re.compile(
     r"^(?P<prefix>[ \t]*(?:[-*+]|\d+\.)[ \t]+)\[(?P<mark>[ xX])\](?P<rest>[ \t]+.*)$",
     re.MULTILINE,
 )
+_ANY_WO_HEADER_RE = re.compile(
+    r"^[ \t>*#_-]*Work\s*Order\s*(?P<wo>\d+)\s*(?:—|–|-|:)\s*(?P<tail>.*)$",
+    re.IGNORECASE,
+)
+
+
+def _norm_status(status: str) -> str:
+    norm = _STATUS_ALIASES.get((status or "").strip().lower(), "")
+    if not norm:
+        raise ValueError(f"Unknown status '{status}' (allowed: done, open)")
+    return norm
 
 
 def _line_re(wo: int) -> re.Pattern:
@@ -101,9 +125,8 @@ def set_status(root: Path, conn, wo: int, status: str,
     """Update the status of a work order in local documentation."""
     from . import audit, indexer
 
-    mark = STATUS_MARK.get(status.lower())
-    if mark is None:
-        raise ValueError(f"Unknown status '{status}' (allowed: done, open)")
+    norm = _norm_status(status)
+    mark = STATUS_MARK[norm]
 
     found = find_line(root, wo)
     if found is None:
@@ -126,7 +149,7 @@ def set_status(root: Path, conn, wo: int, status: str,
             "unchanged": True,
             "verified": True,
             "wo": int(wo),
-            "status": status.lower(),
+            "status": norm,
             "source": "local",
             "path": path.relative_to(root).as_posix() if path.is_relative_to(root) else str(path),
         }
@@ -136,7 +159,7 @@ def set_status(root: Path, conn, wo: int, status: str,
         "changed": not dry_run,
         "dry_run": dry_run,
         "wo": int(wo),
-        "status": status.lower(),
+        "status": norm,
         "source": "local",
         "path": path.relative_to(root).as_posix() if path.is_relative_to(root) else str(path),
         "before": old_line.strip()[:120],
@@ -157,53 +180,157 @@ def set_status(root: Path, conn, wo: int, status: str,
     indexer.index_file(conn, root, path)
     conn.commit()
 
-    audit.log(root, "set_status", wo=wo, status=status, source="local",
+    audit.log(root, "set_status", wo=wo, status=norm, source="local",
               path=payload["path"], verified=verified)
     return payload
 
 
-def find_task_line(root: Path, task_query: str) -> tuple[Path, str, re.Match] | None:
-    """Return the file, full text, and regex match for a Markdown checkbox task."""
-    needle = (task_query or "").strip().casefold()
-    if not needle:
-        return None
+def _wo_context_map(text: str) -> list[tuple[int, int, int | None, bool]]:
+    """Return `(start_offset, end_offset, wo_num, is_open_or_standalone)` line spans."""
+    spans: list[tuple[int, int, int | None, bool]] = []
+    current_wo: int | None = None
+    current_open = True
+    offset = 0
+    for raw_line in text.splitlines(keepends=True):
+        line_no_nl = raw_line.rstrip("\r\n")
+        wm = _ANY_WO_HEADER_RE.match(line_no_nl)
+        if wm:
+            current_wo = int(wm.group("wo"))
+            tail = wm.group("tail")[:36]
+            is_done = bool(re.search(r"✅|☑|\bERLEDIGT\b|\bABGESCHLOSSEN\b|\bDONE\b", tail, re.IGNORECASE))
+            current_open = not is_done
+        elif line_no_nl.lstrip().startswith("#"):
+            current_wo = None
+            current_open = True
+        end_offset = offset + len(raw_line)
+        spans.append((offset, end_offset, current_wo, current_open))
+        offset = end_offset
+    return spans
+
+
+def _enclosing_wo_for_offset(spans: list[tuple[int, int, int | None, bool]], pos: int) -> tuple[int | None, bool]:
+    for start, end, wo_num, is_open in spans:
+        if start <= pos < end:
+            return wo_num, is_open
+    return None, True
+
+
+def _collect_open_task_hints(root: Path, wo: int | None = None, limit: int = 5) -> list[str]:
+    hints: list[str] = []
     for path in targets(root):
         try:
             text = path.read_text(encoding="utf-8")
         except OSError:
             continue
+        spans = _wo_context_map(text)
         for match in _TASK_RE.finditer(text):
-            if needle in match.group("rest").casefold():
+            if match.group("mark").lower() == "x":
+                continue
+            enc_wo, enc_open = _enclosing_wo_for_offset(spans, match.start())
+            if wo is not None and enc_wo != int(wo):
+                continue
+            if wo is None and not enc_open:
+                continue
+            step_txt = match.group("rest").strip()
+            if step_txt and step_txt not in hints:
+                hints.append(step_txt)
+                if len(hints) >= limit:
+                    return hints
+    return hints
+
+
+def find_task_line(
+    root: Path,
+    task_query: str,
+    wo: int | None = None,
+    target_mark: str | None = None,
+) -> tuple[Path, str, re.Match] | None:
+    """Return the file, full text, and regex match for a Markdown checkbox task.
+
+    When `wo` is provided, restricts matching to steps inside Work Order `wo`.
+    When `target_mark` is provided ('x' or ' '), prefers an untoggled match inside
+    an open Work Order so duplicate steps like `- [ ] Add unit tests` never get
+    stuck on an earlier completed Work Order.
+    """
+    needle = (task_query or "").strip().casefold()
+    if not needle:
+        return None
+    candidates: list[tuple[int, int, Path, str, re.Match]] = []
+    seq = 0
+    for path in targets(root):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        spans = _wo_context_map(text)
+        for match in _TASK_RE.finditer(text):
+            if needle not in match.group("rest").casefold():
+                continue
+            enc_wo, enc_open = _enclosing_wo_for_offset(spans, match.start())
+            if wo is not None and enc_wo != int(wo):
+                continue
+            cur_mark = match.group("mark").lower()
+            if target_mark is None:
                 return path, text, match
-    return None
+            needs_change = cur_mark != target_mark.lower()
+            if needs_change and enc_open:
+                prio = 0
+            elif needs_change:
+                prio = 1
+            elif enc_open:
+                prio = 2
+            else:
+                prio = 3
+            candidates.append((prio, seq, path, text, match))
+            seq += 1
+    if not candidates:
+        return None
+    candidates.sort(key=lambda item: (item[0], item[1]))
+    _, _, best_path, best_text, best_match = candidates[0]
+    return best_path, best_text, best_match
 
 
 def set_task_status(root: Path, conn, task: str, status: str,
-                    dry_run: bool = False) -> dict:
+                    dry_run: bool = False, wo: int | None = None) -> dict:
     """Toggle a Markdown checkbox task (`- [ ]` <-> `- [x]`) in local documentation."""
     from . import audit, indexer
 
-    norm = status.lower()
-    if norm not in STATUS_MARK:
-        raise ValueError(f"Unknown status '{status}' (allowed: done, open)")
+    norm = _norm_status(status)
     target_char = "x" if norm == "done" else " "
 
-    found = find_task_line(root, task)
+    found = find_task_line(root, task, wo=wo, target_mark=target_char)
     if found is None:
-        return {
+        hints = _collect_open_task_hints(root, wo=wo)
+        scope_note = f" under Work Order {int(wo)}" if wo is not None else ""
+        hint_note = (
+            f" Open steps{scope_note}: " + "; ".join(f"'{h}'" for h in hints)
+            if hints
+            else ""
+        )
+        res_missing: dict = {
             "written": False,
             "changed": False,
             "verified": False,
-            "reason": f"Checkbox task matching '{task}' is not in any local documentation file.",
+            "reason": f"Checkbox task matching '{task}'{scope_note} is not in any local documentation file.{hint_note}",
             "source": "local",
         }
+        if hints:
+            res_missing["open_tasks_hint"] = hints
+        if wo is not None:
+            res_missing["wo"] = int(wo)
+        return res_missing
 
     path, text, match = found
+    effective_wo = (
+        int(wo)
+        if wo is not None
+        else _enclosing_wo_for_offset(_wo_context_map(text), match.start())[0]
+    )
     rel_path = path.relative_to(root).as_posix() if path.is_relative_to(root) else str(path)
     old_line = match.group(0)
     new_line = f"{match.group('prefix')}[{target_char}]{match.group('rest')}"
     if match.group("mark").lower() == target_char:
-        return {
+        unchanged_res: dict = {
             "written": False,
             "changed": False,
             "unchanged": True,
@@ -213,8 +340,11 @@ def set_task_status(root: Path, conn, task: str, status: str,
             "source": "local",
             "path": rel_path,
         }
+        if effective_wo is not None:
+            unchanged_res["wo"] = int(effective_wo)
+        return unchanged_res
 
-    payload = {
+    payload: dict = {
         "written": not dry_run,
         "changed": not dry_run,
         "dry_run": dry_run,
@@ -225,13 +355,18 @@ def set_task_status(root: Path, conn, task: str, status: str,
         "before": old_line.strip()[:120],
         "after": new_line.strip()[:120],
     }
+    if effective_wo is not None:
+        payload["wo"] = int(effective_wo)
     if dry_run:
         return payload
 
     _write_atomic(path, text[: match.start()] + new_line + text[match.end():])
 
-    confirmed = find_task_line(root, task)
-    verified = bool(confirmed and confirmed[2].group("mark").lower() == target_char)
+    try:
+        disk_text = path.read_text(encoding="utf-8")
+        verified = disk_text[match.start(): match.start() + len(new_line)] == new_line
+    except OSError:
+        verified = False
     payload["verified"] = verified
     if not verified:
         payload["warning"] = "Checkbox was written, but could not be read back from the file."
@@ -239,8 +374,10 @@ def set_task_status(root: Path, conn, task: str, status: str,
     indexer.index_file(conn, root, path)
     conn.commit()
 
-    audit.log(root, "set_task_status", task=task, status=status, source="local",
-              path=rel_path, verified=verified)
+    log_kwargs: dict = {"task": task, "status": norm, "source": "local", "path": rel_path, "verified": verified}
+    if effective_wo is not None:
+        log_kwargs["wo"] = int(effective_wo)
+    audit.log(root, "set_task_status", **log_kwargs)
     return payload
 
 

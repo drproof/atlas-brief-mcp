@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import difflib
 import json
 import re
 import sqlite3
 from typing import Any
 
-from .normalize import build_match, fold, terms
+from .normalize import STOPWORDS, build_match, fold, fold_fts, terms
 
 MAX_HARD_CHARS = 8000
 
@@ -45,6 +46,14 @@ def clean_snippet(text: str) -> str:
     return text.strip()
 
 
+_DIGRAPH_RE = re.compile(r"ae|oe|ue")
+_DIGRAPH_MAP = {"ae": "a", "oe": "o", "ue": "u"}
+
+
+def _de_digraph(token: str) -> str:
+    return _DIGRAPH_RE.sub(lambda m: _DIGRAPH_MAP[m.group(0)], token)
+
+
 def run_search(
     conn: sqlite3.Connection,
     query: str,
@@ -69,19 +78,27 @@ def run_search(
     log_penalties = _log_penalty(conn, rows)
 
     wanted = terms(query)
-    # Also include hyphen-split parts for the heading boost: 'helden-klassen'
-    # should match 'Helden, Skills & 3D-Camp' rather than failing on the hyphen.
+    # Include hyphen-split parts, de-digraphed umlauts ('ruestungs' -> 'rustung'),
+    # and Fugen-stripped stems for the heading boost.
     wanted_parts: set[str] = set()
     for term in wanted:
         wanted_parts.add(term)
-        wanted_parts.update(part for part in term.split("-") if len(part) > 3)
+        for part in term.split("-"):
+            if len(part) >= 3:
+                wanted_parts.add(part)
+                dedig = _de_digraph(part)
+                if len(dedig) >= 3:
+                    wanted_parts.add(dedig)
+                for fugen in ("s", "es", "en"):
+                    if dedig.endswith(fugen) and len(dedig) - len(fugen) >= 4:
+                        wanted_parts.add(dedig[: -len(fugen)])
 
     results: list[dict[str, Any]] = []
     for row in rows:
         if doc and row["doc_id"] != doc:
             continue
         score = float(row["score"])  # bm25 is negative: smaller = better
-        heading_folded = fold(row["heading"])
+        heading_folded = fold(row["heading"]) + " " + fold_fts(row["heading"])
         if any(part in heading_folded for part in wanted_parts):
             score *= 1.5
         if row["level"] == 2:
@@ -146,30 +163,16 @@ def _looks_like_index(body: str) -> bool:
 
 WO_LINE_RE = re.compile(r"Work\s*Order\s*\d+\s*[—–:\-]", re.IGNORECASE)
 
-# Minimum number of work order lines for a section to be treated as a logbook.
-# Previously set to 3 — which also penalized a 5-entry prototype milestone plan
-# against ordinary prose paragraphs.
 LOG_MIN_LINES = 8
-# Threshold for a full logbook: maximum penalty.
 LOG_HARD_LINES = 16
-# Headings that announce an overview — never a logbook, regardless of how many
-# work orders are listed underneath.
-# Deliberately excludes "work orders" and "status": that is what the logbook
-# itself is called in most projects, and including them would bypass the line-
-# count rule below — letting a 30-line logbook win every system query again.
-LOG_HEADING_HINTS = ("plan", "meilenstein", "milestone", "roadmap", "übersicht",
-                     "overview", "fahrplan", "backlog", "statusübersicht")
+LOG_HEADING_HINTS = (
+    "plan", "meilenstein", "milestone", "roadmap", "übersicht",
+    "overview", "fahrplan", "backlog", "statusübersicht",
+)
 
 
 def _log_penalty(conn: sqlite3.Connection, rows) -> dict[tuple[str, str], float]:
-    """Compute a score penalty factor for sections that are work order logbooks.
-
-    The chunker splits a long section into 1,500-character parts. A single part
-    may contain only 1–2 work order lines and look like a normal section. Count
-    across **all** parts of a heading rather than per part.
-
-    Returns: `{(doc_id, heading): factor}`. Missing headings default to 1.0.
-    """
+    """Compute a score penalty factor for sections that are work order logbooks."""
     verdict: dict[tuple[str, str], float] = {}
     for row in rows:
         key = (row["doc_id"], row["heading"])
@@ -186,42 +189,157 @@ def _log_penalty(conn: sqlite3.Connection, rows) -> dict[tuple[str, str], float]
         if total < LOG_MIN_LINES:
             verdict[key] = 1.0
         elif total < LOG_HARD_LINES:
-            verdict[key] = 0.5   # half penalty: overview with many entries
+            verdict[key] = 0.5
         else:
-            verdict[key] = 0.25  # full penalty: logbook
+            verdict[key] = 0.25
     return {key: factor for key, factor in verdict.items() if factor < 1.0}
 
 
+def _prefix_in_vocab(conn: sqlite3.Connection, prefix: str) -> bool:
+    if not prefix:
+        return False
+    upper = prefix[:-1] + chr(ord(prefix[-1]) + 1)
+    return conn.execute(
+        "SELECT 1 FROM fts_vocab WHERE term >= ? AND term < ? LIMIT 1",
+        (prefix, upper),
+    ).fetchone() is not None
+
+
+def _orthographic_variants(conn: sqlite3.Connection, term: str) -> list[str]:
+    """Return attested FTS vocabulary / stem variants for ASCII umlauts (`ae`/`oe`/`ue`) and `ss` <-> `ß`."""
+    candidates: list[str] = []
+    dedig = _de_digraph(term)
+    for base in dict.fromkeys((term, dedig)):
+        if base != term:
+            candidates.append(base)
+        if "ss" in base:
+            candidates.append(base.replace("ss", "ß"))
+            # Handle mixed compounds like `stossschaden` (`stoß` + `schaden`)
+            idx = 0
+            while True:
+                pos = base.find("ss", idx)
+                if pos < 0:
+                    break
+                single_sub = base[:pos] + "ß" + base[pos + 2:]
+                if single_sub not in candidates:
+                    candidates.append(single_sub)
+                idx = pos + 1
+
+    attested: list[str] = []
+    for cand in candidates:
+        if len(cand) < 3 or cand == term:
+            continue
+        if _in_vocab(conn, cand) or (len(cand) >= 4 and _prefix_in_vocab(conn, cand)):
+            attested.append(cand)
+            continue
+        for fugen in ("s", "es", "en", "n"):
+            if cand.endswith(fugen) and len(cand) - len(fugen) >= 4:
+                stem = cand[: -len(fugen)]
+                if _in_vocab(conn, stem):
+                    attested.append(stem)
+                    break
+    return list(dict.fromkeys(attested))
+
+
+_FUGENLAUTE = ("", "s", "es", "n", "en", "er", "e")
+
+
+def _split_compound_vocab(conn: sqlite3.Connection, word: str, max_parts: int = 3) -> list[str]:
+    """Split a compound word into 2 or 3 attested FTS vocabulary stems (handling German Fugenlaute)."""
+    n = len(word)
+    if n < 6:
+        return []
+    if n >= 8:
+        for cut in range(4, n - 3):
+            head = word[:cut]
+            if not _in_vocab(conn, head):
+                continue
+            for fugen in _FUGENLAUTE:
+                rest_start = cut + len(fugen)
+                if rest_start > n - 4 or not word.startswith(fugen, cut):
+                    continue
+                tail = word[rest_start:]
+                if _in_vocab(conn, tail):
+                    return [head, tail]
+                if max_parts >= 3 and len(tail) >= 6:
+                    sub = _split_compound_vocab(conn, tail, max_parts=max_parts - 1)
+                    if sub:
+                        return [head, *sub]
+
+    # Fallback for 3-letter domain stems ('tie'+'breaker', 'eis'+'schaden', 'hex'+'feld')
+    for cut in range(3, n - 2):
+        head = word[:cut]
+        if head in STOPWORDS or not _in_vocab(conn, head):
+            continue
+        for fugen in ("", "s"):
+            rest_start = cut + len(fugen)
+            if rest_start > n - 3 or not word.startswith(fugen, cut):
+                continue
+            tail = word[rest_start:]
+            if tail in STOPWORDS:
+                continue
+            if _in_vocab(conn, tail):
+                return [head, tail]
+            if max_parts >= 3 and len(tail) >= 6:
+                sub = _split_compound_vocab(conn, tail, max_parts=max_parts - 1)
+                if sub:
+                    return [head, *sub]
+    return []
+
+
 def _compound_clause(conn: sqlite3.Connection, query: str) -> str | None:
-    """Build a compound-word FTS clause for terms that do not exist whole in the index.
-
-    "Gewölbestürmer" is written in the GDD as "Gewölbe-Stürmer" — as a single
-    token it never matches. Its parts match together: `("gewolbe"* AND "sturmer"*)`.
-
-    The clause is **OR-ed** onto the normal query rather than replacing it:
-    otherwise a common word like "perk" would suppress the precise compound match.
-    """
+    """Build FTS clauses for orthographic variants, Fugen-stems, and 2/3-part compounds."""
     clauses: list[str] = []
+    seen_clauses: set[str] = set()
+
+    def _emit(expr: str) -> None:
+        if expr and expr not in seen_clauses:
+            seen_clauses.add(expr)
+            clauses.append(expr)
+
     for term in terms(query):
-        if len(term) < 8 or _in_vocab(conn, term):
+        if "-" in term:
             continue
 
-        pieces: list[str] = []
-        longest = ""
-        for cut in range(4, len(term) - 3):
-            head, tail = term[:cut], term[cut:]
-            if _in_vocab(conn, head) and _in_vocab(conn, tail):
-                pieces.extend([head, tail])
-            elif _in_vocab(conn, head) and len(head) > len(longest):
-                longest = head
+        # 1. Orthographic variants (`ae/oe/ue -> a/o/u`, `ss -> ß`)
+        for variant in _orthographic_variants(conn, term):
+            safe_v = variant.replace('"', "")
+            _emit(f'"{safe_v}"*')
 
-        unique = list(dict.fromkeys(pieces))
-        if len(unique) >= 2:
-            clauses.append("(" + " AND ".join(f'"{piece}"*' for piece in unique[:2]) + ")")
+        # 2. Trailing Fugenlaut on hyphen-split or standalone modifier ('rustungs' -> 'rustung')
+        if len(term) >= 5 and not _in_vocab(conn, term) and not _prefix_in_vocab(conn, term):
+            base_forms = list(dict.fromkeys((term, _de_digraph(term))))
+            for form in base_forms:
+                for fugen in ("s", "es", "en", "n"):
+                    if form.endswith(fugen) and len(form) - len(fugen) >= 4:
+                        stem = form[: -len(fugen)]
+                        if _in_vocab(conn, stem):
+                            _emit(f'"{stem}"*')
+                            break
+
+        if len(term) < 6 or _in_vocab(conn, term):
+            continue
+
+        # 3. 2-part and 3-part compound decomposition (including de-digraphed & Eszett forms)
+        probe_forms = list(dict.fromkeys((term, _de_digraph(term), term.replace("ss", "ß"))))
+        matched_parts: list[str] = []
+        longest = ""
+        for form in probe_forms:
+            parts = _split_compound_vocab(conn, form, max_parts=3)
+            if len(parts) >= 2:
+                matched_parts = parts
+                break
+            for cut in range(len(form) - 3, 3, -1):
+                head = form[:cut]
+                if len(head) > len(longest) and _in_vocab(conn, head):
+                    longest = head
+                    break
+
+        if len(matched_parts) >= 2:
+            _emit("(" + " AND ".join(f'"{piece}"*' for piece in matched_parts) + ")")
         elif len(longest) >= 6:
-            # Only one part attested ('Rüstungsregeln' -> 'rustungs'): use as a
-            # prefix. Require at least 6 chars to avoid noise.
-            clauses.append(f'"{longest}"*')
+            _emit(f'"{longest}"*')
+
     return " OR ".join(clauses) or None
 
 
@@ -324,6 +442,49 @@ def search(
     return _shrink(payload, budget)
 
 
+def _suggest_anchors(conn: sqlite3.Connection, anchor: str, limit: int = 5) -> list[str]:
+    """Return closest indexed section anchors when a requested `anchor` does not exist."""
+    needle = (anchor or "").strip().split("~")[0]
+    if not needle:
+        return []
+    doc_prefix = needle.split("#", 1)[0].casefold() if "#" in needle else ""
+    slug_part = needle.split("#", 1)[1].casefold() if "#" in needle else needle.casefold()
+    slug_tokens = {tok for tok in re.split(r"[^a-z0-9]+", fold(slug_part)) if len(tok) >= 2}
+
+    rows = conn.execute(
+        "SELECT DISTINCT anchor, doc_id, heading FROM sections WHERE part=1"
+    ).fetchall()
+    scored: list[tuple[float, str]] = []
+    seen: set[str] = set()
+    for row in rows:
+        cand = (row["anchor"] or "").split("~")[0]
+        if not cand or cand in seen:
+            continue
+        seen.add(cand)
+        cand_low = cand.casefold()
+        cand_slug = cand_low.split("#", 1)[1] if "#" in cand_low else cand_low
+        ratio = difflib.SequenceMatcher(None, needle.casefold(), cand_low).ratio()
+        slug_ratio = difflib.SequenceMatcher(None, slug_part, cand_slug).ratio()
+        score = max(ratio, slug_ratio * 0.95)
+        if doc_prefix and (row["doc_id"] or "").casefold() == doc_prefix:
+            score += 0.2
+        if slug_part and (slug_part in cand_slug or cand_slug in slug_part):
+            score += 0.25
+        if slug_tokens:
+            cand_tokens = {
+                tok
+                for tok in re.split(r"[^a-z0-9]+", fold(f"{cand_slug} {row['heading'] or ''}"))
+                if len(tok) >= 2
+            }
+            overlap = len(slug_tokens & cand_tokens) / len(slug_tokens)
+            score += overlap * 0.35
+        if score >= 0.35:
+            scored.append((score, cand))
+
+    scored.sort(key=lambda item: (-item[0], item[1]))
+    return [cand for _s, cand in scored[: max(1, limit)]]
+
+
 def read(
     conn: sqlite3.Connection,
     anchor: str,
@@ -337,10 +498,13 @@ def read(
         (base, base + "~%"),
     ).fetchall()
     if not rows:
-        return _dumps({
+        suggestions = _suggest_anchors(conn, anchor)
+        err_payload: dict[str, Any] = {
             "error": f"anchor '{anchor}' not found.",
+            "suggestions": suggestions,
             "hint": "Use atlas_where() or atlas_outline().",
-        })
+        }
+        return _dumps(err_payload)
 
     first = rows[0]
     body = "\n\n".join(row["body"] for row in rows).strip()
@@ -378,6 +542,7 @@ def read(
         "line": first["line_start"],
         "chars": len(chunk),
         "total_chars": total,
+        "offset": start,
         "truncated": start + len(chunk) < total,
         "body": chunk,
     }
@@ -425,16 +590,17 @@ def tasks(
     max_chars: int = 1000,
 ) -> str:
     budget = _clamp(max_chars)
-    sql = "SELECT anchor, text, done, owner, tag, line FROM tasks"
+    sql = "SELECT anchor, path, text, done, owner, tag, line FROM tasks"
     clauses: list[str] = []
     params: list[Any] = []
     if status == "open":
         clauses.append("done=0")
     elif status == "done":
         clauses.append("done=1")
-    if owner:
-        clauses.append("owner=?")
-        params.append(owner)
+    if owner and owner.strip().lstrip("@"):
+        clean_owner = owner.strip().lstrip("@")
+        clauses.append("LOWER(owner)=LOWER(?)")
+        params.append(clean_owner)
     if clauses:
         sql += " WHERE " + " AND ".join(clauses)
     sql += " ORDER BY done, anchor LIMIT 60"
@@ -443,6 +609,7 @@ def tasks(
     items = [
         {
             "anchor": row["anchor"],
+            "path": row["path"] or "",
             "line": row["line"],
             "text": row["text"],
             "owner": row["owner"] or "",
@@ -469,11 +636,16 @@ def links(conn: sqlite3.Connection, anchor: str, max_chars: int = 400) -> str:
     budget = _clamp(max_chars)
     base = anchor.split("~")[0]
     row = conn.execute(
-        "SELECT doc_id, heading FROM sections WHERE anchor=? OR anchor LIKE ? LIMIT 1",
+        "SELECT doc_id, path, heading FROM sections WHERE anchor=? OR anchor LIKE ? LIMIT 1",
         (base, f"{base}~%"),
     ).fetchone()
     if row is None:
-        return _dumps({"error": f"anchor '{anchor}' not found."})
+        suggestions = _suggest_anchors(conn, anchor)
+        return _dumps({
+            "error": f"anchor '{anchor}' not found.",
+            "suggestions": suggestions,
+            "hint": "Use atlas_where() or atlas_outline().",
+        })
 
     doc = conn.execute(
         "SELECT implements, tags FROM docs WHERE id=?", (row["doc_id"],)
@@ -486,6 +658,7 @@ def links(conn: sqlite3.Connection, anchor: str, max_chars: int = 400) -> str:
     payload = {
         "anchor": base,
         "heading": row["heading"],
+        "path": row["path"] or "",
         "implements": (doc["implements"] if doc else "") or "",
         "tags": (doc["tags"] if doc else "") or "",
         "siblings": [{"anchor": s["anchor"], "heading": s["heading"]} for s in siblings],

@@ -203,7 +203,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="explicit work order number (default: next free number)")
     p.add_argument("--section", default="Work Orders",
                    help="heading of the target section (default: 'Work Orders')")
-    p.add_argument("--symbols", default="",
+    p.add_argument("--symbols", "--verify-symbols", dest="symbols", default="",
                    help="comma-separated target symbols to pre-register in .atlas/wo-symbols.yml")
     p.add_argument("--dry-run", action="store_true", help="preview without writing")
 
@@ -658,7 +658,9 @@ def main(argv: list[str] | None = None) -> int:
         # Regression guard: check symbols of completed work orders against the code.
         # Anything listed here is a ✅ that no longer matches current reality.
         try:
-            items = json.loads(status_mod.status(conn))["work_orders"]
+            items = list(status_mod.extract_work_orders(conn))
+            indexed_nums = {int(i["wo"]) for i in items if i.get("wo") is not None}
+            items.extend(status_mod._recover_unindexed_work_orders(root, indexed_nums))
             mapping = verify.load_wo_symbols(root)
             payload["attachment_regressions"] = verify.regressions(root, items)
             payload["wo_symbols"] = mapping
@@ -666,7 +668,7 @@ def main(argv: list[str] | None = None) -> int:
             # a regression there would go unnoticed. Surface them without failing.
             payload["work_orders_without_symbols"] = [
                 item["wo"] for item in items
-                if str(item.get("status", "")).lower() in {"done", "erledigt"}
+                if str(item.get("status", "")).lower() in {"done", "erledigt", "abgeschlossen"}
                 and item["wo"] not in mapping
             ]
         except Exception as error:  # empty/None index — diagnostics must never crash

@@ -31,11 +31,20 @@ FALLBACK_SECTIONS = (
 )
 
 
+def _norm_status(status: str) -> str:
+    """Normalize English and German status strings to `'done'` or `'open'`."""
+    lowered = (status or "").strip().lower()
+    if lowered in {"done", "erledigt", "abgeschlossen"}:
+        return "done"
+    if lowered in {"open", "offen", "ausstehend", "todo", "in_progress", "in progress"}:
+        return "open"
+    raise ValueError(f"Unknown status '{status}' (allowed: done, open)")
+
+
 def format_line(wo: int, status: str, title: str, description: str = "") -> str:
     """'Work Order 7 — ✅ DONE (Title): Description'"""
-    mark = gdocs.STATUS_MARK.get(status.lower())
-    if mark is None:
-        raise ValueError(f"Unknown status '{status}' (allowed: done, open)")
+    norm = _norm_status(status)
+    mark = gdocs.STATUS_MARK[norm]
     line = f"Work Order {int(wo)} — {mark}"
     if title.strip():
         line += f" ({title.strip()})"
@@ -89,10 +98,28 @@ def iter_tab_bodies(document: dict):
         yield "", "", document["body"]
 
 
+def _iter_body_paragraphs(body: dict | None):
+    """Yield every structural element containing a `paragraph` in `body`, including tables and TOCs."""
+    def walk_content(elements):
+        for element in elements or []:
+            if element.get("paragraph"):
+                yield element
+            table = element.get("table")
+            if table:
+                for row in table.get("tableRows") or []:
+                    for cell in row.get("tableCells") or []:
+                        yield from walk_content(cell.get("content"))
+            toc = element.get("tableOfContents")
+            if toc:
+                yield from walk_content(toc.get("content"))
+
+    yield from walk_content((body or {}).get("content"))
+
+
 def tab_text(body: dict) -> str:
-    """Concatenate all text runs of a tab body into a single string."""
+    """Concatenate all text runs of a tab body (including table cells) into a single string."""
     chunks: list[str] = []
-    for element in (body or {}).get("content") or []:
+    for element in _iter_body_paragraphs(body):
         paragraph = element.get("paragraph") or {}
         for item in paragraph.get("elements") or []:
             run = item.get("textRun")
@@ -101,21 +128,221 @@ def tab_text(body: dict) -> str:
     return "".join(chunks)
 
 
-def find_tab_with_text(document: dict, needle: str) -> tuple[str, str]:
-    """Return (tab_id, tab_title) of the tab whose text contains `needle`."""
+def _get_gdoc(docs, document_id: str) -> dict:
+    """Fetch a Google Doc with `includeTabsContent=True`, falling back cleanly on legacy clients."""
+    try:
+        return docs.documents().get(
+            documentId=document_id, includeTabsContent=True
+        ).execute()
+    except TypeError:
+        return docs.documents().get(documentId=document_id).execute()
+
+
+def _is_revision_conflict(error: Exception) -> bool:
+    """Return True when `error` indicates a stale Google Docs `requiredRevisionId` write lock."""
+    cause = getattr(error, "__cause__", None)
+    cause_text = f" {cause} {gdocs._explain(cause)}" if cause is not None else ""
+    combined = f"{error} {gdocs._explain(error)}{cause_text}".lower()
+    return any(
+        token in combined
+        for token in (
+            "requiredrevisionid",
+            "writecontrol",
+            "modified since the revision",
+            "revision specified",
+            "stale revision",
+        )
+    )
+
+
+def find_tab_body_with_text(document: dict, needle: str) -> tuple[str, str, dict | None]:
+    """Return `(tab_id, tab_title, body)` of the tab whose text contains `needle`."""
     for tab_id, title, body in iter_tab_bodies(document):
         if needle in tab_text(body):
-            return tab_id, title
-    return "", ""
+            return tab_id, title, body
+    return "", "", None
 
 
-def _replace_all(docs, document_id: str, revision: str, old_text: str,
-                 new_text: str, tab_id: str = "") -> tuple[int, bool]:
-    """Run `replaceAllText`, scoped to a single tab when possible.
+def find_tab_with_text(document: dict, needle: str) -> tuple[str, str]:
+    """Return (tab_id, tab_title) of the tab whose text contains `needle`."""
+    tab_id, title, _body = find_tab_body_with_text(document, needle)
+    return tab_id, title
 
-    Without `tabsCriteria`, the Docs API searches **all** tabs: an identical
-    status string in an archive tab would also be modified. Returns:
-    (number of occurrences replaced, whether the tab lock took effect).
+
+_WO_HEADER_NUM_RE = re.compile(
+    r"^\s*(?:#{1,6}\s+|\*{1,2})?Work\s*Order\s*(\d+)\s*(?:—|–|-|:)",
+    re.IGNORECASE,
+)
+
+
+def _utf16_len(text: str) -> int:
+    """Return Google Docs UTF-16 code unit count for `text`."""
+    return len(text.encode("utf-16-le")) // 2
+
+
+def _body_has_indices(body: dict | None) -> bool:
+    """Return True when `body` carries Google Docs `startIndex` character offsets."""
+    for element in _iter_body_paragraphs(body):
+        if element.get("startIndex") is not None:
+            return True
+        paragraph = element.get("paragraph") or {}
+        for item in paragraph.get("elements") or []:
+            if item.get("startIndex") is not None:
+                return True
+    return False
+
+
+def _replace_in_body_ranges(
+    docs,
+    document_id: str,
+    revision: str,
+    body: dict | None,
+    old_text: str,
+    new_text: str,
+    tab_id: str = "",
+    wo: int | None = None,
+    max_replacements: int = 0,
+) -> int:
+    """Replace `old_text` using exact UTF-16 character ranges across fragmented `textRun`s.
+
+    Google Docs frequently splits a status or checklist line across multiple
+    `textRun` elements (bold `Work Order 9`, normal ` — `, colored `⬜ OPEN`),
+    causing `replaceAllText` to return 0 occurrences. Range replacement also
+    allows scoping duplicate step text (`- [ ] Add unit tests`) to a single
+    Work Order `wo` without mutating other Work Orders in the same tab.
+    """
+    if not old_text or not body or not _body_has_indices(body):
+        return 0
+
+    matches: list[tuple[int, int]] = []
+    current_wo: int | None = None
+
+    for element in _iter_body_paragraphs(body):
+        paragraph = element.get("paragraph")
+        if not paragraph:
+            continue
+        p_chars: list[str] = []
+        u16_offsets: list[int] = []
+        cursor: int | None = element.get("startIndex")
+        has_offsets = True
+
+        for item in paragraph.get("elements") or []:
+            item_start = item.get("startIndex")
+            if item_start is not None:
+                cursor = int(item_start)
+            run = item.get("textRun")
+            if not run:
+                if cursor is not None and item.get("endIndex") is not None:
+                    cursor = int(item["endIndex"])
+                continue
+            content_str = run.get("content", "")
+            if not content_str:
+                continue
+            if cursor is None:
+                has_offsets = False
+            for ch in content_str:
+                p_chars.append(ch)
+                if cursor is not None:
+                    u16_offsets.append(cursor)
+                    cursor += _utf16_len(ch)
+        if cursor is not None:
+            u16_offsets.append(cursor)
+
+        p_text = "".join(p_chars)
+        if not p_text:
+            continue
+
+        is_heading = _paragraph_style(element).startswith("HEADING")
+        offset = 0
+        for line in p_text.splitlines(keepends=True):
+            line_start = offset
+            line_end = offset + len(line)
+            offset = line_end
+            wo_match = _WO_HEADER_NUM_RE.match(line)
+            if wo_match:
+                current_wo = int(wo_match.group(1))
+            elif is_heading or line.lstrip().startswith("#"):
+                current_wo = None
+            if wo is not None and current_wo != int(wo):
+                continue
+            if not has_offsets or len(u16_offsets) < len(p_text) + 1:
+                continue
+            search_from = line_start
+            while True:
+                idx = p_text.find(old_text, search_from, line_end)
+                if idx < 0:
+                    break
+                end_idx = idx + len(old_text)
+                matches.append((u16_offsets[idx], u16_offsets[end_idx]))
+                if max_replacements > 0 and len(matches) >= max_replacements:
+                    break
+                search_from = end_idx
+            if max_replacements > 0 and len(matches) >= max_replacements:
+                break
+        if max_replacements > 0 and len(matches) >= max_replacements:
+            break
+
+    if not matches:
+        return 0
+
+    requests: list[dict] = []
+    for start_u16, end_u16 in reversed(matches):
+        del_range: dict = {"startIndex": start_u16, "endIndex": end_u16}
+        if tab_id:
+            del_range["tabId"] = tab_id
+        requests.append({"deleteContentRange": {"range": del_range}})
+        if new_text:
+            loc: dict = {"index": start_u16}
+            if tab_id:
+                loc["tabId"] = tab_id
+            requests.append({"insertText": {"location": loc, "text": new_text}})
+
+    req_body: dict = {"requests": requests}
+    if revision:
+        req_body["writeControl"] = {"requiredRevisionId": revision}
+    try:
+        docs.documents().batchUpdate(documentId=document_id, body=req_body).execute()
+    except Exception as error:
+        raise gdocs.SyncError(gdocs._explain(error)) from error
+    return len(matches)
+
+
+def _step_safe_for_unindexed_replace_all(tab_body: dict, old_text: str, wo: int) -> bool:
+    """Return True when `old_text` occurs under `wo` and nowhere else in an unindexed body."""
+    from . import localwrite
+
+    text = tab_text(tab_body)
+    wo_ctx = localwrite._wo_context_map(text)
+    in_target = False
+    in_other = False
+    offset = 0
+    for line in text.splitlines(keepends=True):
+        if old_text in line:
+            enc_wo, _enc_open = localwrite._enclosing_wo_for_offset(wo_ctx, offset)
+            if enc_wo == int(wo):
+                in_target = True
+            else:
+                in_other = True
+        offset += len(line)
+    return in_target and not in_other
+
+
+def _replace_all(
+    docs,
+    document_id: str,
+    revision: str,
+    old_text: str,
+    new_text: str,
+    tab_id: str = "",
+    tab_body: dict | None = None,
+    wo: int | None = None,
+) -> tuple[int, bool]:
+    """Run `replaceAllText` scoped to a single tab, falling back to UTF-16 range replacement.
+
+    Never strips `tabsCriteria` when `tab_id` is non-empty: falling back to an
+    unscoped `replaceAllText` would modify identical lines in archive tabs.
+    When `wo` is provided for a non-header line (such as a checklist step), never
+    runs an unscoped `replaceAllText` that could toggle another Work Order's step.
     """
     def send(criteria: str) -> int:
         request: dict = {
@@ -138,13 +365,40 @@ def _replace_all(docs, document_id: str, revision: str, old_text: str,
         replies = response.get("replies") or [{}]
         return (replies[0].get("replaceAllText") or {}).get("occurrencesChanged", 0)
 
+    is_wo_scoped_step = wo is not None and not _WO_HEADER_NUM_RE.search(old_text)
+    if is_wo_scoped_step and tab_body is not None:
+        if _body_has_indices(tab_body):
+            changed = _replace_in_body_ranges(
+                docs, document_id, revision, tab_body, old_text, new_text,
+                tab_id=tab_id, wo=wo, max_replacements=1,
+            )
+            return changed, bool(tab_id and changed)
+        if not _step_safe_for_unindexed_replace_all(tab_body, old_text, int(wo)):
+            return 0, False
+
     if tab_id:
         changed = send(tab_id)
         if changed:
             return changed, True
-        # The line may be split across multiple text runs — in that case the
-        # tab filter misses, though the match is still unique across the doc.
-    return send(""), False
+        if tab_body is not None:
+            changed = _replace_in_body_ranges(
+                docs, document_id, revision, tab_body, old_text, new_text,
+                tab_id=tab_id, wo=wo,
+            )
+            if changed:
+                return changed, True
+        return 0, False
+
+    changed = send("")
+    if changed:
+        return changed, False
+    if tab_body is not None:
+        changed = _replace_in_body_ranges(
+            docs, document_id, revision, tab_body, old_text, new_text,
+            tab_id="", wo=wo,
+        )
+        return changed, False
+    return 0, False
 
 
 def _is_section_title(text: str, needle: str) -> bool:
@@ -296,7 +550,7 @@ def _attachment_gate(root: Path, wo: int | None, status: str,
     checked even when the caller omits them: an agent that forgets the caller
     also forgets to pass the verification list.
     """
-    if status.lower() not in {"done", "erledigt"}:
+    if _norm_status(status) != "done":
         return {}, ""
 
     recorded = verify.load_wo_symbols(root).get(int(wo), []) if wo is not None else []
@@ -353,14 +607,15 @@ def publish(
     client_secret: str | None = None,
     verify_symbols: list[str] | None = None,
 ) -> dict:
-    line = format_line(wo, status, title, description)
+    norm_status = _norm_status(status)
+    line = format_line(wo, norm_status, title, description)
 
     # Wiring gate: runs locally before any credential or network access.
     # An acceptance without a caller is never written — it would record an
     # intention rather than a delivered result (WO 8).
-    gate, refusal = _attachment_gate(root, wo, status, verify_symbols, dry_run)
+    gate, refusal = _attachment_gate(root, wo, norm_status, verify_symbols, dry_run)
     if refusal:
-        audit.log(root, "publish_refused", wo=wo, status=status, title=title,
+        audit.log(root, "publish_refused", wo=wo, status=norm_status, title=title,
                   symbols=[e["symbol"] for e in gate["verify"].get("failed", [])],
                   refused=True, written=False, verified=False)
         return {
@@ -368,7 +623,7 @@ def publish(
             "refused": True,
             "refusal": refusal,
             "wo": int(wo),
-            "status": status.lower(),
+            "status": norm_status,
             **gate,
         }
 
@@ -384,20 +639,20 @@ def publish(
         None,
     )
     if existing is not None:
-        if existing["status"] == status.lower():
+        if existing["status"] == norm_status:
             return {
                 "written": False,
                 "unchanged": True,
                 "wo": int(wo),
-                "status": status.lower(),
+                "status": norm_status,
                 "message": (
-                    f"Work Order {wo} is already recorded as '{status}' in the document — "
+                    f"Work Order {wo} is already recorded as '{norm_status}' in the document — "
                     "nothing appended. Work orders are not duplicated."
                 ),
                 **gate,
             }
         # Different status: update in place instead of appending a second line.
-        result = set_status(root, conn, wo, status=status, dry_run=dry_run,
+        result = set_status(root, conn, wo, status=norm_status, dry_run=dry_run,
                             client_secret=client_secret, verify_symbols=verify_symbols)
         result["reused_set_status"] = True
         result["message"] = (
@@ -414,10 +669,10 @@ def publish(
         from . import localwrite
 
         result = localwrite.publish(
-            root, conn, int(wo), format_line(wo, status, title, description),
+            root, conn, int(wo), format_line(wo, norm_status, title, description),
             section, dry_run=dry_run,
         )
-        if not dry_run and result.get("verified") and status.lower() in {"done", "erledigt"}:
+        if not dry_run and result.get("verified") and norm_status == "done":
             verify.record_wo_symbols(root, int(wo), verify_symbols)
         return {**result, **gate}
 
@@ -523,7 +778,64 @@ def publish(
     try:
         docs.documents().batchUpdate(documentId=document_id, body=body).execute()
     except Exception as error:
-        raise gdocs.SyncError(gdocs._explain(error)) from error
+        if not _is_revision_conflict(error):
+            raise gdocs.SyncError(gdocs._explain(error)) from error
+        try:
+            fresh_doc = _get_gdoc(docs, document_id)
+        except Exception as refetch_err:
+            raise gdocs.SyncError(gdocs._explain(refetch_err)) from refetch_err
+        fresh_live = "\n".join(
+            tab_text(b) for _tid, _title, b in iter_tab_bodies(fresh_doc)
+        )
+        if _status_line_re(int(wo)).search(fresh_live):
+            result = set_status(
+                root, conn, wo, status=status, dry_run=dry_run,
+                client_secret=client_secret, verify_symbols=verify_symbols,
+            )
+            result["reused_set_status"] = True
+            return result
+        candidate_sections = (
+            list(dict.fromkeys([section, *FALLBACK_SECTIONS]))
+            if section == DEFAULT_SECTION
+            else [section]
+        )
+        retry_index = None
+        for current_tab_id, current_title, tab_body in iter_tab_bodies(fresh_doc):
+            if tab_id and current_tab_id != tab_id:
+                continue
+            for sec_name in candidate_sections:
+                idx, found_heading = find_insert_index(tab_body, sec_name)
+                if idx is not None:
+                    retry_index = idx
+                    heading = found_heading
+                    tab_id = current_tab_id
+                    tab_title = current_title
+                    break
+            if retry_index is not None:
+                break
+        if retry_index is None and section == DEFAULT_SECTION:
+            for current_tab_id, current_title, tab_body in iter_tab_bodies(fresh_doc):
+                if tab_id and current_tab_id != tab_id:
+                    continue
+                idx, found_heading = _find_wo_section_in_body(tab_body)
+                if idx is not None:
+                    retry_index = idx
+                    heading = found_heading
+                    tab_id = current_tab_id
+                    tab_title = current_title
+                    break
+        if retry_index is None:
+            raise gdocs.SyncError(gdocs._explain(error)) from error
+        insert_index = retry_index
+        payload["index"] = insert_index
+        retry_body = _insert_request(insert_index, line, tab_id)
+        fresh_rev = fresh_doc.get("revisionId", "")
+        if fresh_rev:
+            retry_body["writeControl"] = {"requiredRevisionId": fresh_rev}
+        try:
+            docs.documents().batchUpdate(documentId=document_id, body=retry_body).execute()
+        except Exception as retry_err:
+            raise gdocs.SyncError(gdocs._explain(retry_err)) from retry_err
 
     # --- Self-verification (Docs API, strongly consistent) ------------------
     # `gdocs.sync` exports via the Drive API, which lags 0.5–2 s behind a write
@@ -531,7 +843,7 @@ def publish(
     # instead — after `batchUpdate`, the Docs API returns the new revision
     # immediately. No `sleep`, no guessing.
     meta = drive.files().get(fileId=document_id, fields="modifiedTime").execute()
-    mark = gdocs.STATUS_MARK.get(status.lower(), "")
+    mark = gdocs.STATUS_MARK.get(norm_status, "")
     doc_text = _tab_text_of(docs, document_id, tab_id)
     verified = any(
         f"Work Order {int(wo)} {separator} {mark}" in doc_text
@@ -572,15 +884,15 @@ def publish(
             "Line was written, but could not be verified in the document. "
             f"Expected: 'Work Order {int(wo)} — {mark}'. Check formatting in the doc."
         )
-    audit.log(root, "publish", wo=wo, status=status, title=title,
+    audit.log(root, "publish", wo=wo, status=norm_status, title=title,
               document=source["name"], tab=tab_title, index=insert_index,
               verified=verified, modified=meta.get("modifiedTime", ""))
-    if verified and status.lower() in {"done", "erledigt"}:
+    if verified and norm_status == "done":
         verify.record_wo_symbols(root, int(wo), verify_symbols)
     if conn is not None and not dry_run:
         from . import localwrite
         if localwrite.find_line(root, int(wo)) is not None:
-            localwrite.set_status(root, conn, int(wo), status, dry_run=False)
+            localwrite.set_status(root, conn, int(wo), norm_status, dry_run=False)
             payload["local_synced"] = True
     return payload
 
@@ -605,6 +917,7 @@ def _mirror_task_to_gdocs(
     task_query: str,
     status: str,
     client_secret: str | None = None,
+    wo: int | None = None,
 ) -> dict:
     """Best-effort mirror of a checkbox task toggle (`- [ ]` <-> `- [x]`) to bound Google Docs."""
     if conn is None:
@@ -625,33 +938,67 @@ def _mirror_task_to_gdocs(
     needle = (task_query or "").strip().casefold()
     if not needle:
         return {"gdocs_task_synced": False}
-    target_char = "x" if status.lower() in {"done", "erledigt"} else " "
+    norm_status = _norm_status(status)
+    target_char = "x" if norm_status == "done" else " "
 
     for source in sources:
-        try:
-            document = docs.documents().get(
-                documentId=source["id"], includeTabsContent=True
-            ).execute()
-        except TypeError:
+        for attempt in range(2):
             try:
-                document = docs.documents().get(documentId=source["id"]).execute()
+                document = _get_gdoc(docs, source["id"])
             except Exception:
-                continue
-        except Exception:
-            continue
+                break
+            revision = document.get("revisionId", "")
+            retry_conflict = False
 
-        for tab_id, _tab_title, body in iter_tab_bodies(document):
-            text = tab_text(body)
-            for match in localwrite._TASK_RE.finditer(text):
-                if needle not in match.group("rest").casefold():
+            for tab_id, _tab_title, body in iter_tab_bodies(document):
+                text = tab_text(body)
+                wo_ctx = localwrite._wo_context_map(text)
+                candidates: list[tuple[tuple[int, int, int], re.Match, int | None]] = []
+                for match in localwrite._TASK_RE.finditer(text):
+                    if needle not in match.group("rest").casefold():
+                        continue
+                    enc_wo, enc_open = localwrite._enclosing_wo_for_offset(wo_ctx, match.start())
+                    if wo is not None and enc_wo != int(wo):
+                        continue
+                    current_mark = match.group("mark").lower()
+                    needs_toggle = 0 if current_mark != target_char else 1
+                    wo_open_rank = 0 if enc_open else 2
+                    candidates.append(((needs_toggle, wo_open_rank, match.start()), match, enc_wo))
+
+                if not candidates:
                     continue
-                current_mark = match.group("mark").lower()
-                if current_mark == target_char:
+                candidates.sort(key=lambda item: item[0])
+                _rank, best, best_wo = candidates[0]
+                if best.group("mark").lower() == target_char:
                     return {"gdocs_task_synced": True, "gdocs_unchanged": True}
-                old_line = match.group(0).strip()
-                new_line = f"{match.group('prefix').lstrip()}[{target_char}]{match.group('rest')}".rstrip()
+
+                old_line = best.group(0).strip()
+                new_line = f"{best.group('prefix').lstrip()}[{target_char}]{best.group('rest')}".rstrip()
+                effective_wo = int(wo) if wo is not None else best_wo
                 try:
-                    changed, _ = _replace_all(docs, source["id"], "", old_line, new_line, tab_id)
+                    if effective_wo is not None and _body_has_indices(body):
+                        changed = _replace_in_body_ranges(
+                            docs,
+                            source["id"],
+                            revision,
+                            body,
+                            old_line,
+                            new_line,
+                            tab_id=tab_id,
+                            wo=effective_wo,
+                            max_replacements=1,
+                        )
+                    else:
+                        changed, _ = _replace_all(
+                            docs,
+                            source["id"],
+                            revision,
+                            old_line,
+                            new_line,
+                            tab_id=tab_id,
+                            tab_body=body,
+                            wo=effective_wo,
+                        )
                     if changed:
                         gdocs.sync(root, sources=[source], force=True, conn=conn)
                         from .indexer import invalidate_sync_state
@@ -659,7 +1006,12 @@ def _mirror_task_to_gdocs(
                         invalidate_sync_state(conn, source["id"])
                         return {"gdocs_task_synced": True, "gdocs_changed": changed}
                 except Exception as exc:
+                    if attempt == 0 and _is_revision_conflict(exc):
+                        retry_conflict = True
+                        break
                     return {"gdocs_task_synced": False, "gdocs_note": str(exc)}
+            if not retry_conflict:
+                break
     return {"gdocs_task_synced": False}
 
 
@@ -675,53 +1027,58 @@ def set_status(
 ) -> dict:
     """Change the status of an already documented work order (✅ ⇄ ⬜) or checkbox task (`- [ ]` ⇄ `- [x]`).
 
-    Uses `replaceAllText` rather than character offsets: matches the full
-    status prefix ('Work Order 9 — ✅ ERLEDIGT'), which is unique in the document.
-    The bare phrase 'Work Order 9' also appears in navigation and prose sections.
+    Uses `replaceAllText` scoped to a single tab (falling back to UTF-16 range
+    replacement when Google Docs splits the line across `textRun`s). When both
+    `wo` and `task` are supplied, `wo` scopes the step toggle to that Work Order.
     """
     from . import status as status_mod
 
-    new_mark = gdocs.STATUS_MARK.get(status.lower())
-    if new_mark is None:
-        raise ValueError(f"Unknown status '{status}' (allowed: done, open)")
+    norm_status = _norm_status(status)
+    new_mark = gdocs.STATUS_MARK[norm_status]
 
     if wo is None and not (task and str(task).strip()):
         raise ValueError("Provide either 'wo' (Work Order number) or 'task' (checkbox text)")
 
-    if wo is None and task and str(task).strip():
+    if task and str(task).strip():
         from . import localwrite
 
-        gate, refusal = _attachment_gate(root, None, status, verify_symbols, dry_run)
+        gate, refusal = _attachment_gate(root, None, norm_status, verify_symbols, dry_run)
         if refusal:
-            audit.log(root, "set_status_refused", task=task, status=status,
+            audit.log(root, "set_status_refused", wo=wo, task=task, status=norm_status,
                       symbols=[e["symbol"] for e in gate["verify"].get("failed", [])],
                       refused=True, written=False, verified=False)
-            return {
+            res_refused = {
                 "changed": False,
                 "refused": True,
                 "refusal": refusal,
                 "task": str(task).strip(),
-                "status": status.lower(),
+                "status": norm_status,
                 **gate,
             }
+            if wo is not None:
+                res_refused["wo"] = int(wo)
+            return res_refused
         result = localwrite.set_task_status(
-            root, conn, str(task).strip(), status, dry_run=dry_run
+            root, conn, str(task).strip(), norm_status, dry_run=dry_run, wo=wo,
         )
         if not dry_run and conn is not None:
             mirror_task = _mirror_task_to_gdocs(
-                root, conn, str(task).strip(), status, client_secret=client_secret
+                root, conn, str(task).strip(), norm_status,
+                client_secret=client_secret, wo=wo,
             )
             result.update(mirror_task)
             if mirror_task.get("gdocs_changed"):
                 result["changed"] = True
                 result["written"] = True
                 result["verified"] = True
+        if wo is not None and "wo" not in result:
+            result["wo"] = int(wo)
         return {**result, **gate}
 
     # Flipping a work order to ✅ is also an acceptance — run the same gate as above.
-    gate, refusal = _attachment_gate(root, wo, status, verify_symbols, dry_run)
+    gate, refusal = _attachment_gate(root, wo, norm_status, verify_symbols, dry_run)
     if refusal:
-        audit.log(root, "set_status_refused", wo=wo, status=status,
+        audit.log(root, "set_status_refused", wo=wo, status=norm_status,
                   symbols=[e["symbol"] for e in gate["verify"].get("failed", [])],
                   refused=True, written=False, verified=False)
         return {
@@ -729,7 +1086,7 @@ def set_status(
             "refused": True,
             "refusal": refusal,
             "wo": int(wo),
-            "status": status.lower(),
+            "status": norm_status,
             **gate,
         }
 
@@ -738,7 +1095,7 @@ def set_status(
 
     # Unchecked steps gate: if a Work Order defines `- [ ]` steps, all steps must
     # be checked off before the Work Order itself can be marked `done`.
-    if status.lower() in {"done", "erledigt"} and current is not None and not dry_run:
+    if norm_status == "done" and current is not None and not dry_run:
         open_steps = [s["text"] for s in (current.get("steps") or []) if not s.get("done")]
         if open_steps:
             refusal_msg = (
@@ -748,14 +1105,14 @@ def set_status(
                 + "\n\nComplete and check off each step (`atlas_set_status(task=..., status='done')`) "
                 "before marking the Work Order done."
             )
-            audit.log(root, "set_status_refused", wo=wo, status=status,
+            audit.log(root, "set_status_refused", wo=wo, status=norm_status,
                       open_steps=open_steps, refused=True, written=False, verified=False)
             return {
                 "changed": False,
                 "refused": True,
                 "refusal": refusal_msg,
                 "wo": int(wo),
-                "status": status.lower(),
+                "status": norm_status,
                 "open_steps": open_steps,
                 **gate,
             }
@@ -766,18 +1123,18 @@ def set_status(
     if not gdocs.known_sources(conn):
         from . import localwrite
 
-        if current is not None and current["status"] == status.lower():
-            return {"changed": False, "wo": int(wo), "status": status,
+        if current is not None and current["status"] == norm_status:
+            return {"changed": False, "wo": int(wo), "status": norm_status,
                     "reason": "Status is already set", **gate}
-        result = localwrite.set_status(root, conn, int(wo), status, dry_run=dry_run)
-        if not dry_run and result.get("verified") and status.lower() in {"done", "erledigt"}:
+        result = localwrite.set_status(root, conn, int(wo), norm_status, dry_run=dry_run)
+        if not dry_run and result.get("verified") and norm_status == "done":
             verify.record_wo_symbols(root, int(wo), verify_symbols)
         return {**result, **gate}
 
     old_marks: list[str] = []
     if current is not None:
-        if current["status"] == status.lower():
-            return {"changed": False, "wo": int(wo), "status": status,
+        if current["status"] == norm_status:
+            return {"changed": False, "wo": int(wo), "status": norm_status,
                     "reason": "Status is already set"}
         marks = gdocs.MARKS_BY_STATUS.get(current["status"])
         if not marks:
@@ -791,10 +1148,12 @@ def set_status(
     else:
         # The index can lag behind the live document (`index_lag` after
         # `publish`). When Google sources are known, inspect the live doc first
-        # instead of aborting with SyncError on a stale index.
+        # (including German ERLEDIGT/OFFEN variants) instead of aborting.
         old_marks = [
-            mark for key, mark in gdocs.STATUS_MARK.items()
-            if key != status.lower()
+            mark
+            for key, marks in gdocs.MARKS_BY_STATUS.items()
+            if key != norm_status
+            for mark in marks
         ]
 
     creds = gdocs.load_credentials(interactive=False, client_secret=client_secret,
@@ -805,12 +1164,7 @@ def set_status(
     samples: list[str] = []
     for source in sources:
         gdocs.assert_writable(conn, source["id"])
-        try:
-            document = docs.documents().get(
-                documentId=source["id"], includeTabsContent=True
-            ).execute()
-        except TypeError:  # older client version does not support `includeTabsContent`
-            document = docs.documents().get(documentId=source["id"]).execute()
+        document = _get_gdoc(docs, source["id"])
         revision = document.get("revisionId", "")
 
         tab_texts = [
@@ -834,8 +1188,10 @@ def set_status(
             if old_text:
                 break
         if not old_text:
+            same_marks = gdocs.MARKS_BY_STATUS.get(norm_status, (new_mark,))
             if current is None and any(
-                f"Work Order {int(wo)} {separator} {new_mark}" in haystack
+                f"Work Order {int(wo)} {separator} {cand}" in haystack
+                for cand in same_marks
                 for separator in SEPARATORS
             ):
                 return {
@@ -843,14 +1199,14 @@ def set_status(
                     "written": False,
                     "unchanged": True,
                     "wo": int(wo),
-                    "status": status.lower(),
+                    "status": norm_status,
                     "reason": "Status is already set",
                     **gate,
                 }
             samples.extend(_work_order_lines(tab_texts, wo))
             continue
 
-        tab_id, tab_title = find_tab_with_text(document, old_text)
+        tab_id, tab_title, tab_body = find_tab_body_with_text(document, old_text)
         payload = {
             "document_id": source["id"],
             "document_name": source["name"],
@@ -865,23 +1221,60 @@ def set_status(
         if dry_run:
             return payload
 
-        changed, tab_locked = _replace_all(
-            docs, source["id"], revision, old_text, new_text, tab_id
-        )
+        try:
+            changed, tab_locked = _replace_all(
+                docs, source["id"], revision, old_text, new_text, tab_id,
+                tab_body=tab_body, wo=int(wo),
+            )
+        except Exception as error:
+            if not _is_revision_conflict(error):
+                raise
+            fresh_doc = _get_gdoc(docs, source["id"])
+            fresh_rev = fresh_doc.get("revisionId", "")
+            retry_tid, retry_ttitle, retry_tbody = find_tab_body_with_text(fresh_doc, old_text)
+            if retry_tbody is not None:
+                tab_id, tab_title, tab_body = retry_tid, retry_ttitle, retry_tbody
+                payload["tab"] = tab_title or "(unscoped)"
+                payload["tab_id"] = tab_id
+                changed, tab_locked = _replace_all(
+                    docs, source["id"], fresh_rev, old_text, new_text, tab_id,
+                    tab_body=tab_body, wo=int(wo),
+                )
+            else:
+                fresh_haystack = "\n".join(
+                    tab_text(b) for _tid, _t, b in iter_tab_bodies(fresh_doc)
+                )
+                if new_text in fresh_haystack:
+                    changed, tab_locked = 1, bool(tab_id)
+                else:
+                    raise
         if changed:
-            if status.lower() in {"done", "erledigt"} and current is not None:
+            if norm_status == "done" and current is not None:
                 for step in current.get("steps") or []:
                     step_text = (step.get("text") or "").strip()
                     if step_text and step.get("done"):
                         try:
-                            _replace_all(
-                                docs,
-                                source["id"],
-                                "",
-                                f"- [ ] {step_text}",
-                                f"- [x] {step_text}",
-                                tab_id,
+                            fresh_doc = _get_gdoc(docs, source["id"])
+                            fresh_rev = fresh_doc.get("revisionId", "")
+                            fresh_body = next(
+                                (
+                                    b
+                                    for tid, _ttitle, b in iter_tab_bodies(fresh_doc)
+                                    if tid == tab_id
+                                ),
+                                None,
                             )
+                            if fresh_body is not None:
+                                _replace_all(
+                                    docs,
+                                    source["id"],
+                                    fresh_rev,
+                                    f"- [ ] {step_text}",
+                                    f"- [x] {step_text}",
+                                    tab_id,
+                                    tab_body=fresh_body,
+                                    wo=int(wo),
+                                )
                         except Exception:
                             pass
             gdocs.sync(root, sources=[source], force=True, conn=conn)
@@ -898,7 +1291,7 @@ def set_status(
                 "verified_via": "documents.get",
                 "current_status": now["status"] if now else "unknown",
             })
-            if payload["verified"] and (now is None or now["status"] != status.lower()):
+            if payload["verified"] and (now is None or now["status"] != norm_status):
                 payload["index_lag"] = True
                 from .indexer import invalidate_sync_state
 
@@ -912,12 +1305,12 @@ def set_status(
                       document=source["name"], tab=tab_title,
                       occurrences=changed, tab_locked=tab_locked,
                       verified=payload["verified"])
-            if payload["verified"] and status.lower() in {"done", "erledigt"}:
+            if payload["verified"] and norm_status == "done":
                 verify.record_wo_symbols(root, int(wo), verify_symbols)
             if conn is not None and not dry_run:
                 from . import localwrite
                 if localwrite.find_line(root, int(wo)) is not None:
-                    localwrite.set_status(root, conn, int(wo), status, dry_run=False)
+                    localwrite.set_status(root, conn, int(wo), norm_status, dry_run=False)
                     payload["local_synced"] = True
             return payload
 
@@ -930,15 +1323,21 @@ def set_status(
         from . import localwrite
         found_local = localwrite.find_line(root, int(wo))
         if found_local is not None:
-            local_res = localwrite.set_status(root, conn, int(wo), status, dry_run=dry_run)
+            local_res = localwrite.set_status(root, conn, int(wo), norm_status, dry_run=dry_run)
             if not dry_run and local_res.get("verified"):
-                if status.lower() in {"done", "erledigt"}:
+                if norm_status == "done":
                     verify.record_wo_symbols(root, int(wo), verify_symbols)
                 refreshed = localwrite.find_line(root, int(wo))
                 if refreshed is not None:
                     mirror = _mirror_to_gdocs(
                         root, conn, int(wo), refreshed[2].group(0).strip(), DEFAULT_SECTION
                     )
+                    if mirror.get("gdocs_existing"):
+                        mirror.update(
+                            _mirror_status_to_gdocs(
+                                root, conn, int(wo), norm_status, client_secret=client_secret
+                            )
+                        )
                     local_res.update(mirror)
             return {**local_res, **gate}
 
@@ -968,6 +1367,87 @@ def _work_order_lines(tab_texts: list[tuple[str, str, str]], wo: int,
     return found
 
 
+def _mirror_status_to_gdocs(
+    root: Path,
+    conn,
+    wo: int,
+    status: str,
+    client_secret: str | None = None,
+) -> dict:
+    """Best-effort sync of an existing Work Order header status (`✅ DONE` ⇄ `⬜ OPEN`) in bound Google Docs."""
+    if conn is None:
+        return {"gdocs_status_synced": False}
+    sources = [s for s in gdocs.known_sources(conn) if s["mimeType"] == gdocs.DOC_MIME]
+    if not sources:
+        return {"gdocs_status_synced": False}
+    try:
+        creds = gdocs.load_credentials(
+            interactive=False, client_secret=client_secret, scopes=gdocs.WRITE_SCOPES
+        )
+        _drive, _sheets, docs = gdocs.build_services(creds)
+    except Exception as exc:
+        return {"gdocs_status_synced": False, "gdocs_note": str(exc)}
+
+    norm_status = _norm_status(status)
+    new_mark = gdocs.STATUS_MARK[norm_status]
+    same_marks = gdocs.MARKS_BY_STATUS.get(norm_status, (new_mark,))
+    old_marks = [
+        mark
+        for key, marks in gdocs.MARKS_BY_STATUS.items()
+        if key != norm_status
+        for mark in marks
+    ]
+
+    for source in sources:
+        for attempt in range(2):
+            try:
+                document = _get_gdoc(docs, source["id"])
+            except Exception:
+                break
+            revision = document.get("revisionId", "")
+            haystack = "\n".join(
+                tab_text(body) for _tid, _title, body in iter_tab_bodies(document)
+            )
+            old_text = ""
+            new_text = ""
+            for candidate_mark in old_marks:
+                for separator in SEPARATORS:
+                    candidate = f"Work Order {int(wo)} {separator} {candidate_mark}"
+                    if candidate in haystack:
+                        old_text = candidate
+                        new_text = f"Work Order {int(wo)} {separator} {new_mark}"
+                        break
+                if old_text:
+                    break
+            if not old_text:
+                if any(
+                    f"Work Order {int(wo)} {separator} {cand}" in haystack
+                    for cand in same_marks
+                    for separator in SEPARATORS
+                ):
+                    return {"gdocs_status_synced": True, "gdocs_status_changed": False}
+                break
+
+            tab_id, _tab_title, tab_body = find_tab_body_with_text(document, old_text)
+            try:
+                changed, _ = _replace_all(
+                    docs, source["id"], revision, old_text, new_text, tab_id,
+                    tab_body=tab_body, wo=int(wo),
+                )
+                if changed:
+                    gdocs.sync(root, sources=[source], force=True, conn=conn)
+                    from .indexer import invalidate_sync_state
+
+                    invalidate_sync_state(conn, source["id"])
+                    return {"gdocs_status_synced": True, "gdocs_status_changed": True}
+                break
+            except Exception as exc:
+                if attempt == 0 and _is_revision_conflict(exc):
+                    continue
+                return {"gdocs_status_synced": False, "gdocs_note": str(exc)}
+    return {"gdocs_status_synced": False}
+
+
 def _mirror_to_gdocs(root: Path, conn, wo: int, text_block: str, section: str) -> dict:
     """Best-effort mirror of a locally planned/updated Work Order into a bound Google Doc."""
     if conn is None:
@@ -985,70 +1465,80 @@ def _mirror_to_gdocs(root: Path, conn, wo: int, text_block: str, section: str) -
         section, *FALLBACK_SECTIONS
     ]))
     for source in sources:
-        try:
-            document = docs.documents().get(
-                documentId=source["id"], includeTabsContent=True
-            ).execute()
-        except TypeError:
+        for attempt in range(2):
             try:
-                document = docs.documents().get(documentId=source["id"]).execute()
+                document = _get_gdoc(docs, source["id"])
             except Exception:
-                continue
-        except Exception:
-            continue
-
-        live_text = "\n".join(
-            tab_text(body) for _tid, _title, body in iter_tab_bodies(document)
-        )
-        if _status_line_re(int(wo)).search(live_text):
-            return {"gdocs_synced": True, "gdocs_document": source["name"], "gdocs_existing": True}
-
-        insert_index = None
-        tab_id = ""
-        for current_tab_id, _current_title, tab_body in iter_tab_bodies(document):
-            for sec_name in candidate_sections:
-                idx, _found_heading = find_insert_index(tab_body, sec_name)
-                if idx is not None:
-                    insert_index = idx
-                    tab_id = current_tab_id
-                    break
-            if insert_index is not None:
                 break
-        if insert_index is None:
+
+            live_text = "\n".join(
+                tab_text(body) for _tid, _title, body in iter_tab_bodies(document)
+            )
+            if _status_line_re(int(wo)).search(live_text):
+                return {"gdocs_synced": True, "gdocs_document": source["name"], "gdocs_existing": True}
+
+            insert_index = None
+            tab_id = ""
             for current_tab_id, _current_title, tab_body in iter_tab_bodies(document):
-                idx, _found_heading = _find_wo_section_in_body(tab_body)
-                if idx is not None:
-                    insert_index = idx
-                    tab_id = current_tab_id
+                for sec_name in candidate_sections:
+                    idx, _found_heading = find_insert_index(tab_body, sec_name)
+                    if idx is not None:
+                        insert_index = idx
+                        tab_id = current_tab_id
+                        break
+                if insert_index is not None:
                     break
+            if insert_index is None:
+                for current_tab_id, _current_title, tab_body in iter_tab_bodies(document):
+                    idx, _found_heading = _find_wo_section_in_body(tab_body)
+                    if idx is not None:
+                        insert_index = idx
+                        tab_id = current_tab_id
+                        break
 
-        if insert_index is None:
-            continue
+            if insert_index is None:
+                break
 
-        revision = document.get("revisionId", "")
-        body = _insert_request(insert_index, text_block, tab_id)
-        if revision:
-            body["writeControl"] = {"requiredRevisionId": revision}
-        try:
-            docs.documents().batchUpdate(documentId=source["id"], body=body).execute()
-            gdocs.sync(root, sources=[source], force=True, conn=conn)
-            from .indexer import invalidate_sync_state
-            invalidate_sync_state(conn, source["id"])
-            return {"gdocs_synced": True, "gdocs_document": source["name"]}
-        except Exception as exc:
-            return {"gdocs_synced": False, "gdocs_note": str(exc)}
+            revision = document.get("revisionId", "")
+            body = _insert_request(insert_index, text_block, tab_id)
+            if revision:
+                body["writeControl"] = {"requiredRevisionId": revision}
+            try:
+                docs.documents().batchUpdate(documentId=source["id"], body=body).execute()
+                gdocs.sync(root, sources=[source], force=True, conn=conn)
+                from .indexer import invalidate_sync_state
+                invalidate_sync_state(conn, source["id"])
+                return {"gdocs_synced": True, "gdocs_document": source["name"]}
+            except Exception as exc:
+                if attempt == 0 and _is_revision_conflict(exc):
+                    continue
+                return {"gdocs_synced": False, "gdocs_note": str(exc)}
 
     return {"gdocs_synced": False}
 
 
 _WO_STOPWORDS = {
     "the", "and", "for", "with", "from", "into", "that", "this", "und", "der",
-    "die", "das", "für", "von", "mit", "aus", "auf", "bei", "den", "dem",
+    "die", "das", "für", "fuer", "fur", "von", "mit", "aus", "auf", "bei", "den", "dem",
+}
+_GENERIC_STEP_BOILERPLATE = {
+    "add unit tests",
+    "write unit tests",
+    "add tests",
+    "write tests",
+    "run tests",
+    "unit tests",
+    "tests ergänzen",
+    "unit-tests ergänzen",
 }
 
 
 def _normalize_wo_title(title: str) -> tuple[str, set[str]]:
-    cleaned = re.sub(r"[^\w\s]+", " ", (title or "").casefold())
+    from . import normalize as normalize_mod
+
+    raw = re.sub(r"(?:ae|oe|ue)", lambda m: {"ae": "a", "oe": "o", "ue": "u"}[m.group(0)], (title or "").casefold())
+    folded = normalize_mod.fold(raw)
+    cleaned = re.sub(r"[^\w\s]+", " ", folded)
     words = [w for w in cleaned.split() if w]
     norm = " ".join(words)
     sig_words = {w for w in words if len(w) >= 3 and w not in _WO_STOPWORDS}
@@ -1066,7 +1556,8 @@ def _find_duplicate_wo(
     norm_topic, topic_words = _normalize_wo_title(topic)
     if not norm_topic:
         return None
-    new_steps = {s.strip().casefold() for s in (steps or []) if s and s.strip()}
+    new_steps_all = {s.strip().casefold() for s in (steps or []) if s and s.strip()}
+    new_steps_sig = new_steps_all - _GENERIC_STEP_BOILERPLATE or new_steps_all
     for item in existing_wos:
         if status_mod._is_boilerplate_wo(item):
             continue
@@ -1087,12 +1578,13 @@ def _find_duplicate_wo(
                 title_matched = True
         if not title_matched:
             continue
-        existing_steps = {
+        existing_steps_all = {
             (s.get("text") or "").strip().casefold()
             for s in (item.get("steps") or [])
             if (s.get("text") or "").strip()
         }
-        if new_steps and existing_steps and new_steps.isdisjoint(existing_steps):
+        existing_steps_sig = existing_steps_all - _GENERIC_STEP_BOILERPLATE or existing_steps_all
+        if new_steps_sig and existing_steps_sig and new_steps_sig.isdisjoint(existing_steps_sig):
             continue
         return item
     return None
@@ -1106,7 +1598,7 @@ def _next_free_wo_number(root: Path, existing_wos: list[dict]) -> int:
     except Exception:
         pass
     try:
-        for entry in audit.tail(root, limit=0):
+        for entry in audit.tail(root, limit=0, only_wo=True):
             if entry.get("refused") or entry.get("verified") is False:
                 continue
             raw_wo = entry.get("wo")

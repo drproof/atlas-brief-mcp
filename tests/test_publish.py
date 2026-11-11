@@ -368,8 +368,8 @@ def test_publish_default_section_falls_back_to_prototyp_meilenstein_plan():
 
 
 def test_set_status_task_mirrors_to_gdocs_and_wo_close_flips_gdoc_steps(monkeypatch, tmp_path):
-    """Checking off a task updates both local ARCHITECTURE.md and the Google Doc,
-    and closing the WO flips any remaining `- [ ]` steps in the Google Doc."""
+    """By default Google Docs stays read-only when `docs/ARCHITECTURE.md` exists;
+    explicit `sync_gdocs=True` (`--gdocs`) mirrors task checkoffs and WO status to Google Docs."""
     from atlas.indexer import open_index
 
     docs_dir = tmp_path / "docs"
@@ -396,21 +396,107 @@ def test_set_status_task_mirrors_to_gdocs_and_wo_close_flips_gdoc_steps(monkeypa
     monkeypatch.setattr(gdocs, "sync", lambda *args, **kwargs: {"written": []})
     monkeypatch.setattr(gdocs, "load_credentials", lambda **kwargs: object())
 
-    # 1. Task is already `[x]` locally, but `[ ]` in Google Docs -> mirrors `[x]` to Google Docs
-    res_task = publish.set_status(tmp_path, conn, status="done", task="Step alpha")
+    # 0. Default (`sync_gdocs=False`) keeps Google Docs 100% untouched!
+    res_default = publish.set_status(tmp_path, conn, status="done", task="Step alpha")
+    assert "gdocs_task_synced" not in res_default
+    assert "- [ ] Step alpha already checked locally" in fake.tabs[0]["text"]
+
+    # 1. Opt-in `sync_gdocs=True`: task is `[x]` locally, `[ ]` in Google Docs -> mirrors `[x]` to Google Docs
+    res_task = publish.set_status(
+        tmp_path, conn, status="done", task="Step alpha", sync_gdocs=True
+    )
     assert res_task["gdocs_task_synced"] is True
     assert "- [x] Step alpha already checked locally" in fake.tabs[0]["text"]
 
-    # 2. Reset Google Doc step to `[ ]` to simulate lag, then close WO 34 -> passes gate and flips step + WO in Google Doc
+    # 2. Reset Google Doc step to `[ ]` to simulate lag, then close WO 34 with `sync_gdocs=True`
     fake.tabs[0]["text"] = (
         "Work Order 34 — ⬜ OPEN (Save Fix):\n"
         "- [ ] Step alpha already checked locally\n"
     )
-    res_wo = publish.set_status(tmp_path, conn, wo=34, status="done")
+    res_wo = publish.set_status(
+        tmp_path, conn, wo=34, status="done", sync_gdocs=True
+    )
     assert res_wo["verified"] is True
     assert "Work Order 34 — ✅ DONE" in fake.tabs[0]["text"]
     assert "- [x] Step alpha already checked locally" in fake.tabs[0]["text"]
     assert "Work Order 34 — ✅ DONE" in arch.read_text(encoding="utf-8")
+
+
+def test_local_first_default_never_calls_gdocs_and_promotes_legacy_gdd_work_orders(
+    monkeypatch, tmp_path
+):
+    """When `docs/ARCHITECTURE.md` exists, `plan`, `publish`, and `set_status` must never
+    call Google Docs APIs by default, and legacy GDD-only Work Orders in `.atlas/cache/`
+    must automatically promote to `docs/ARCHITECTURE.md` on task/WO status updates."""
+    from atlas.indexer import open_index, refresh
+
+    docs_dir = tmp_path / "docs"
+    docs_dir.mkdir()
+    arch = docs_dir / "ARCHITECTURE.md"
+    arch.write_text(
+        "---\nid: architecture\n---\n\n# Architecture\n\n## 3. Work Orders\n\n"
+        "Work Order 1 — ✅ DONE (Core Unit): Initial setup.\n",
+        encoding="utf-8",
+    )
+    cache_dir = tmp_path / ".atlas" / "cache"
+    cache_dir.mkdir(parents=True)
+    gdd_cache = cache_dir / "master-gdd.md"
+    gdd_cache.write_text(
+        "---\nid: master-gdd\nsource: gdrive\nkind: doc\ndrive_id: doc-ro-1\n---\n\n"
+        "# Prototyp-Meilenstein-Plan\n\n"
+        "Work Order 34 — ⬜ OPEN (Imprisoned Heroes Save Fix):\n"
+        "- [ ] Persist imprisoned_heroes in save payload\n"
+        "- [ ] Add save/load roundtrip test\n",
+        encoding="utf-8",
+    )
+
+    conn = open_index(tmp_path)
+    refresh(conn, tmp_path, force=True)
+
+    monkeypatch.setattr(gdocs, "known_sources", lambda c: [
+        {"id": "doc-ro-1", "name": "Master GDD", "mimeType": gdocs.DOC_MIME}
+    ])
+    monkeypatch.setattr(
+        gdocs,
+        "load_credentials",
+        lambda **kw: pytest.fail("Google Docs credentials/API must never be called in local-first mode"),
+    )
+
+    # 1. Toggling step 1 of legacy GDD-only WO 34 promotes WO 34 into ARCHITECTURE.md locally
+    step1 = publish.set_status(
+        tmp_path, conn, task="Persist imprisoned_heroes", status="done"
+    )
+    assert step1["verified"] is True
+    assert step1["promoted_from_gdd"] is True
+    assert step1["wo"] == 34
+    assert "Work Order 34 — ⬜ OPEN (Imprisoned Heroes Save Fix)" in arch.read_text(encoding="utf-8")
+    assert "- [x] Persist imprisoned_heroes in save payload" in arch.read_text(encoding="utf-8")
+
+    # 2. Closing WO 34 while step 2 is still open is refused by the local step gate
+    refused = publish.set_status(tmp_path, conn, wo=34, status="done")
+    assert refused["refused"] is True
+    assert refused["open_steps"] == ["Add save/load roundtrip test"]
+
+    # 3. Checking step 2 and closing WO 34 succeeds purely locally despite stale `.atlas/cache/master-gdd.md`
+    step2 = publish.set_status(
+        tmp_path, conn, wo=34, task="Add save/load roundtrip test", status="done"
+    )
+    assert step2["verified"] is True
+    closed = publish.set_status(tmp_path, conn, wo=34, status="done")
+    assert closed["verified"] is True
+    assert "Work Order 34 — ✅ DONE" in arch.read_text(encoding="utf-8")
+    # Read-only GDD cache was never mutated directly
+    assert "Work Order 34 — ⬜ OPEN" in gdd_cache.read_text(encoding="utf-8")
+
+    # 4. Planning and publishing new Work Orders also stay 100% local (zero Google Docs calls)
+    planned = publish.plan(tmp_path, conn, "Camp Dialogue Triggers", steps=["Wire camp signal"])
+    assert planned["wo"] == 35
+    assert planned["verified"] is True
+    assert "gdocs_synced" not in planned
+
+    published = publish.publish(tmp_path, conn, wo=36, status="open", title="Post-Release Polish")
+    assert published["verified"] is True
+    assert published["source"] == "local"
 
 
 def test_plan_deduplicates_matching_wo_and_respects_audit_numbers(tmp_path):

@@ -1276,7 +1276,13 @@ def test_prose_wo_reference_preserves_checklist_and_reconcile_syncs_existing_gdo
         monkeypatch.setattr(gdocs, "sync", lambda *a, **kw: {"written": []})
         monkeypatch.setattr(gdocs, "load_credentials", lambda **kw: object())
 
-        rec = status_mod.reconcile_work_orders(tmp_path, conn, dry_run=False)
+        # Default local-first reconcile does NOT mutate bound Google Docs (`synced_to_gdocs == []`)
+        rec_local_only = status_mod.reconcile_work_orders(tmp_path, conn, dry_run=False)
+        assert rec_local_only["synced_to_gdocs"] == []
+        assert "⬜ OFFEN" in "".join(fake.tabs["t.1"]["runs"])
+
+        # Explicit opt-in `sync_gdocs=True` (`--gdocs`) mirrors WO 2 status & steps to Google Docs
+        rec = status_mod.reconcile_work_orders(tmp_path, conn, dry_run=False, sync_gdocs=True)
         assert 2 in rec["synced_to_gdocs"]
         gdoc_text = "".join(fake.tabs["t.1"]["runs"])
         assert "Work Order 2 — ✅ DONE" in gdoc_text

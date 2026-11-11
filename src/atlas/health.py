@@ -119,18 +119,35 @@ def warnings(root) -> list[str]:
 
     found: list[str] = []
     recent = _recent(root)
-    ever_wrote = any(entry.get("verified") is True and entry.get("source") != "local" for entry in recent)
+    ever_wrote_sheets = any(
+        entry.get("verified") is True
+        and entry.get("source") != "local"
+        and str(entry.get("tool") or "") in {"sheet_update", "sheet_append"}
+        for entry in recent
+    )
+    ever_wrote_docs = any(
+        entry.get("verified") is True
+        and entry.get("source") != "local"
+        and str(entry.get("tool") or "") not in {"sheet_update", "sheet_append"}
+        for entry in recent
+    )
 
     # 1. Write scopes lost even though a remote write succeeded previously.
-    if ever_wrote:
+    if ever_wrote_sheets or ever_wrote_docs:
         scopes = _token_scopes()
         if scopes is not None:
-            missing = [scope for scope in gdocs.WRITE_SCOPES if scope not in scopes]
+            required = (
+                gdocs.WRITE_SCOPES
+                if ever_wrote_docs
+                else gdocs.SHEET_WRITE_SCOPES
+            )
+            missing = [scope for scope in required if scope not in scopes]
             if missing:
                 short = ", ".join(scope.rsplit("/", 1)[-1] for scope in missing)
+                auth_cmd = "atlas auth --docs-write" if ever_wrote_docs else "atlas auth"
                 found.append(
                     f"Token has lost write permissions ({short}) — "
-                    "re-run `atlas auth`, otherwise every write will fail."
+                    f"re-run `{auth_cmd}`, otherwise remote writes will fail."
                 )
 
     # 2. A write remained unverified — and was not confirmed by a later retry.

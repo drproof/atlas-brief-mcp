@@ -296,6 +296,59 @@ def test_multipart_section_reassembles_steps_across_chunk_boundary():
     assert items[0]["steps_total"] == 4
 
 
+def test_local_architecture_doc_is_authoritative_over_stale_gdd_cache_in_both_directions(tmp_path):
+    """Local `docs/ARCHITECTURE.md` must win over `.atlas/cache/` exports both when a WO
+    is closed locally (stale `OPEN` in GDD) and when reopened locally (stale `DONE` in GDD),
+    while historical GDD-only WOs remain visible and consolidate locally on `reconcile`."""
+    from atlas.indexer import open_index, refresh
+    from atlas.status import reconcile_work_orders
+
+    (tmp_path / "docs").mkdir()
+    arch = tmp_path / "docs" / "ARCHITECTURE.md"
+    arch.write_text(
+        "---\nid: architecture\n---\n\n# Architecture\n\n## 3. Work Orders\n\n"
+        "Work Order 10 — ⬜ OPEN (Reopened Locally):\n"
+        "- [x] Done step\n"
+        "- [ ] Newly added follow-up step\n\n"
+        "Work Order 11 — ✅ DONE (Completed Locally):\n"
+        "- [x] Local step 1\n"
+        "- [x] Local step 2\n",
+        encoding="utf-8",
+    )
+    cache_dir = tmp_path / ".atlas" / "cache"
+    cache_dir.mkdir(parents=True)
+    (cache_dir / "gdd.md").write_text(
+        "---\nid: gdd\nsource: gdrive\nkind: doc\ndrive_id: gdoc-1\n---\n\n# Milestone Plan\n\n"
+        "Work Order 9 — ✅ DONE (Historical GDD Only): Legacy order.\n\n"
+        "Work Order 10 — ✅ DONE (Reopened Locally):\n"
+        "- [x] Done step\n\n"
+        "Work Order 11 — ⬜ OPEN (Completed Locally):\n"
+        "- [ ] Local step 1\n"
+        "- [ ] Local step 2\n",
+        encoding="utf-8",
+    )
+
+    conn = open_index(tmp_path)
+    refresh(conn, tmp_path, force=True)
+    by_wo = {item["wo"]: item for item in extract_work_orders(conn)}
+
+    # Historical GDD-only WO 9 is preserved
+    assert by_wo[9]["status"] == "done"
+    # Reopened local WO 10 stays OPEN (stale GDD `DONE` does not overwrite local state!)
+    assert by_wo[10]["status"] == "open"
+    assert by_wo[10]["steps_done"] == 1
+    assert by_wo[10]["steps_total"] == 2
+    # Closed local WO 11 stays DONE with 2/2 steps despite stale GDD `OPEN`
+    assert by_wo[11]["status"] == "done"
+    assert by_wo[11]["steps_done"] == 2
+
+    # Reconcile pulls historical GDD-only WO 9 into docs/ARCHITECTURE.md without touching GDD
+    rec = reconcile_work_orders(tmp_path, conn)
+    assert 9 in rec["synced_to_local"]
+    assert rec["synced_to_gdocs"] == []
+    assert "Work Order 9 — ✅ DONE (Historical GDD Only)" in arch.read_text(encoding="utf-8")
+
+
 
 
 

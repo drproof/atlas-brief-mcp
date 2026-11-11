@@ -103,3 +103,18 @@ def test_local_write_does_not_demand_google_write_scopes(tmp_path, monkeypatch):
     _token(tmp_path, ["https://www.googleapis.com/auth/drive.readonly"], monkeypatch)
 
     assert health.warnings(tmp_path) == []
+
+
+def test_sheet_write_only_requires_sheet_scopes_not_docs_write_scope(tmp_path, monkeypatch):
+    """Default `atlas auth` grants Docs read-only + Sheets write (`SHEET_WRITE_SCOPES`).
+    A `sheet_update` must NOT trigger a false warning about missing `documents` write scope."""
+    _log(tmp_path, [{"tool": "sheet_update", "tab": "Units", "key": "goblin", "verified": True}])
+    _token(tmp_path, sorted(gdocs.SHEET_WRITE_SCOPES), monkeypatch)
+    assert health.warnings(tmp_path) == []
+
+    # If spreadsheets write scope itself is lost, warn and point to `atlas auth` (without --docs-write)
+    _token(tmp_path, sorted(gdocs.READ_SCOPES), monkeypatch)
+    warns = health.warnings(tmp_path)
+    assert len(warns) == 1
+    assert "spreadsheets" in warns[0]
+    assert "`atlas auth`" in warns[0]

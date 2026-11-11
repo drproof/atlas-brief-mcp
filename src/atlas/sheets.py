@@ -306,11 +306,12 @@ def read_back(service, spreadsheet_id: str, tab: str, cells: list[str]) -> dict[
 # Public operations
 # --------------------------------------------------------------------------
 
-def _service(client_secret: str | None = None):
+def _service(client_secret: str | None = None, write: bool = True):
     from googleapiclient.discovery import build
 
+    wanted = gdocs.SHEET_WRITE_SCOPES if write else gdocs.READ_SCOPES
     creds = gdocs.load_credentials(
-        interactive=False, client_secret=client_secret, scopes=gdocs.WRITE_SCOPES
+        interactive=False, client_secret=client_secret, scopes=wanted
     )
     return build("sheets", "v4", credentials=creds, cache_discovery=False)
 

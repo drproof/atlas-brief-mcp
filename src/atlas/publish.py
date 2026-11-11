@@ -14,6 +14,7 @@ Four safeguards because writing to Google Docs is more fragile than reading:
 from __future__ import annotations
 
 import json
+import os
 import re
 from pathlib import Path
 
@@ -29,6 +30,59 @@ FALLBACK_SECTIONS = (
     "Meilensteine",
     "Milestones",
 )
+
+
+def should_sync_gdocs(sync_gdocs: bool = False) -> bool:
+    """Return True only when Google Docs write-mirroring is explicitly enabled.
+
+    By default (`False`), Google Docs is treated as a read-only design source (GDD)
+    while local Git Markdown (`docs/ARCHITECTURE.md`) is the authoritative single
+    source of truth for Work Orders and `- [x]` steps. Opt in per call via
+    `sync_gdocs=True` (`--gdocs`) or globally via `ATLAS_SYNC_GDOCS=1`.
+    """
+    if sync_gdocs:
+        return True
+    return os.environ.get("ATLAS_SYNC_GDOCS", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _promote_wo_to_local(
+    root: Path,
+    conn,
+    item: dict,
+    status_override: str | None = None,
+    mark_all_steps_done: bool = False,
+    dry_run: bool = False,
+) -> dict:
+    """Materialize an indexed GDD-only Work Order into local `docs/ARCHITECTURE.md`."""
+    from . import localwrite
+
+    wo_num = int(item["wo"])
+    st = _norm_status(status_override or item.get("status") or "open")
+    title = item.get("title") or f"Work Order {wo_num}"
+    syms = item.get("symbols") or []
+    desc_parts: list[str] = []
+    if item.get("spec_anchor"):
+        desc_parts.append(f"Spec `{item['spec_anchor']}`")
+    if syms:
+        desc_parts.append("Symbols: " + ", ".join(f"`{s}`" for s in syms))
+    header = format_line(
+        wo_num,
+        st,
+        title,
+        " · ".join(desc_parts) if desc_parts else "Promoted from synced GDD.",
+    )
+    steps_list = item.get("steps") or []
+    step_lines = [
+        f"- [{'x' if (mark_all_steps_done or s.get('done')) else ' '}] {s['text']}"
+        for s in steps_list
+    ]
+    block = "\n".join([header, *step_lines])
+    return localwrite.publish(root, conn, wo_num, block, DEFAULT_SECTION, dry_run=dry_run)
 
 
 def _norm_status(status: str) -> str:
@@ -606,6 +660,7 @@ def publish(
     dry_run: bool = False,
     client_secret: str | None = None,
     verify_symbols: list[str] | None = None,
+    sync_gdocs: bool = False,
 ) -> dict:
     norm_status = _norm_status(status)
     line = format_line(wo, norm_status, title, description)
@@ -632,7 +687,7 @@ def publish(
     # `status` picks the *first* entry, so the stale one wins. That happened on
     # Nov 5: four WOs appeared twice (⬜ OPEN + ✅ DONE), and `atlas status`
     # reported "4 open" even though all four were finished.
-    from . import status as status_mod
+    from . import localwrite, status as status_mod
 
     existing = next(
         (item for item in status_mod.extract_work_orders(conn) if item["wo"] == int(wo)),
@@ -653,7 +708,8 @@ def publish(
             }
         # Different status: update in place instead of appending a second line.
         result = set_status(root, conn, wo, status=norm_status, dry_run=dry_run,
-                            client_secret=client_secret, verify_symbols=verify_symbols)
+                            client_secret=client_secret, verify_symbols=verify_symbols,
+                            sync_gdocs=sync_gdocs)
         result["reused_set_status"] = True
         result["message"] = (
             f"Work Order {wo} already existed as '{existing['status']}' — "
@@ -661,13 +717,11 @@ def publish(
         )
         return result
 
-    # No Google document bound to this project: write locally to the managed
-    # Markdown docs. Without this branch, the workflow `atlas init` sets up
-    # ("status is a tool call") ended in an error for any user without a
-    # Google account.
-    if not gdocs.known_sources(conn):
-        from . import localwrite
-
+    # Local-first Single Source of Truth: whenever local Markdown docs exist
+    # (e.g. `docs/ARCHITECTURE.md`) and `sync_gdocs` was not explicitly requested,
+    # write directly to local Git Markdown without touching read-only Google Docs.
+    local_targets = localwrite.targets(root)
+    if not gdocs.known_sources(conn) or (local_targets and not should_sync_gdocs(sync_gdocs)):
         result = localwrite.publish(
             root, conn, int(wo), format_line(wo, norm_status, title, description),
             section, dry_run=dry_run,
@@ -753,7 +807,8 @@ def publish(
     )
     if _status_line_re(int(wo)).search(live_text):
         result = set_status(root, conn, wo, status=status, dry_run=dry_run,
-                            client_secret=client_secret, verify_symbols=verify_symbols)
+                            client_secret=client_secret, verify_symbols=verify_symbols,
+                            sync_gdocs=sync_gdocs)
         result["reused_set_status"] = True
         return result
 
@@ -791,6 +846,7 @@ def publish(
             result = set_status(
                 root, conn, wo, status=status, dry_run=dry_run,
                 client_secret=client_secret, verify_symbols=verify_symbols,
+                sync_gdocs=sync_gdocs,
             )
             result["reused_set_status"] = True
             return result
@@ -893,6 +949,9 @@ def publish(
         from . import localwrite
         if localwrite.find_line(root, int(wo)) is not None:
             localwrite.set_status(root, conn, int(wo), norm_status, dry_run=False)
+            payload["local_synced"] = True
+        elif localwrite.targets(root):
+            localwrite.publish(root, conn, int(wo), line, section, dry_run=False)
             payload["local_synced"] = True
     return payload
 
@@ -1024,24 +1083,26 @@ def set_status(
     client_secret: str | None = None,
     verify_symbols: list[str] | None = None,
     task: str | None = None,
+    sync_gdocs: bool = False,
 ) -> dict:
     """Change the status of an already documented work order (✅ ⇄ ⬜) or checkbox task (`- [ ]` ⇄ `- [x]`).
 
-    Uses `replaceAllText` scoped to a single tab (falling back to UTF-16 range
-    replacement when Google Docs splits the line across `textRun`s). When both
-    `wo` and `task` are supplied, `wo` scopes the step toggle to that Work Order.
+    Local Git Markdown (`docs/ARCHITECTURE.md`) is updated as the authoritative
+    source of truth. Google Docs is only modified when `sync_gdocs=True`
+    (`ATLAS_SYNC_GDOCS=1`) or when the workspace has no local Markdown files.
     """
-    from . import status as status_mod
+    from . import localwrite, status as status_mod
 
     norm_status = _norm_status(status)
     new_mark = gdocs.STATUS_MARK[norm_status]
+    local_targets = localwrite.targets(root)
+    mirror_gdocs = should_sync_gdocs(sync_gdocs) or not local_targets
 
     if wo is None and not (task and str(task).strip()):
         raise ValueError("Provide either 'wo' (Work Order number) or 'task' (checkbox text)")
 
     if task and str(task).strip():
-        from . import localwrite
-
+        task_str = str(task).strip()
         gate, refusal = _attachment_gate(root, None, norm_status, verify_symbols, dry_run)
         if refusal:
             audit.log(root, "set_status_refused", wo=wo, task=task, status=norm_status,
@@ -1051,7 +1112,7 @@ def set_status(
                 "changed": False,
                 "refused": True,
                 "refusal": refusal,
-                "task": str(task).strip(),
+                "task": task_str,
                 "status": norm_status,
                 **gate,
             }
@@ -1059,11 +1120,47 @@ def set_status(
                 res_refused["wo"] = int(wo)
             return res_refused
         result = localwrite.set_task_status(
-            root, conn, str(task).strip(), norm_status, dry_run=dry_run, wo=wo,
+            root, conn, task_str, norm_status, dry_run=dry_run, wo=wo,
         )
-        if not dry_run and conn is not None:
+        # If the step belongs to a legacy GDD-only Work Order not yet in local Markdown,
+        # promote that Work Order into `docs/ARCHITECTURE.md` and toggle the step locally.
+        if (
+            not result.get("verified")
+            and not result.get("unchanged")
+            and conn is not None
+            and local_targets
+        ):
+            needle = task_str.casefold()
+            candidates = [
+                item
+                for item in status_mod.extract_work_orders(conn)
+                if (wo is None or item["wo"] == int(wo))
+                and localwrite.find_line(root, int(item["wo"])) is None
+                and any(needle in (s.get("text") or "").casefold() for s in (item.get("steps") or []))
+            ]
+            candidates.sort(key=lambda item: (0 if item.get("status") == "open" else 1, item["wo"]))
+            if candidates:
+                cand = candidates[0]
+                if dry_run:
+                    result = {
+                        "written": False,
+                        "changed": True,
+                        "dry_run": True,
+                        "promoted_from_gdd": True,
+                        "wo": int(cand["wo"]),
+                        "task": task_str,
+                        "status": norm_status,
+                        "source": "local",
+                    }
+                else:
+                    _promote_wo_to_local(root, conn, cand, dry_run=False)
+                    result = localwrite.set_task_status(
+                        root, conn, task_str, norm_status, dry_run=False, wo=int(cand["wo"])
+                    )
+                    result["promoted_from_gdd"] = True
+        if not dry_run and conn is not None and mirror_gdocs:
             mirror_task = _mirror_task_to_gdocs(
-                root, conn, str(task).strip(), norm_status,
+                root, conn, task_str, norm_status,
                 client_secret=client_secret, wo=wo,
             )
             result.update(mirror_task)
@@ -1116,16 +1213,30 @@ def set_status(
                 "open_steps": open_steps,
                 **gate,
             }
-    # No Google document bound to this project: write locally to the managed
-    # Markdown docs. Without this branch, the workflow `atlas init` sets up
-    # ("status is a tool call") ended in an error for any user without a
-    # Google account.
-    if not gdocs.known_sources(conn):
-        from . import localwrite
 
+    # Local-first Single Source of Truth: update local Markdown (`docs/ARCHITECTURE.md`)
+    # directly when local docs exist and Google Docs write-mirroring is not opted in.
+    if not gdocs.known_sources(conn) or not mirror_gdocs:
         if current is not None and current["status"] == norm_status:
             return {"changed": False, "wo": int(wo), "status": norm_status,
                     "reason": "Status is already set", **gate}
+        if local_targets and current is not None and localwrite.find_line(root, int(wo)) is None:
+            promoted = _promote_wo_to_local(
+                root,
+                conn,
+                current,
+                status_override=norm_status,
+                mark_all_steps_done=(norm_status == "done"),
+                dry_run=dry_run,
+            )
+            promoted.update({
+                "changed": not dry_run,
+                "status": norm_status,
+                "promoted_from_gdd": True,
+            })
+            if not dry_run and promoted.get("verified") and norm_status == "done":
+                verify.record_wo_symbols(root, int(wo), verify_symbols)
+            return {**promoted, **gate}
         result = localwrite.set_status(root, conn, int(wo), norm_status, dry_run=dry_run)
         if not dry_run and result.get("verified") and norm_status == "done":
             verify.record_wo_symbols(root, int(wo), verify_symbols)
@@ -1618,6 +1729,7 @@ def plan(
     section: str = DEFAULT_SECTION,
     verify_symbols: list[str] | None = None,
     dry_run: bool = False,
+    sync_gdocs: bool = False,
 ) -> dict:
     """Create a new `⬜ OPEN` Work Order linked to the matching spec section (`atlas_where`) and checklist steps."""
     from . import brief as brief_mod, localwrite, search as search_mod, status as status_mod
@@ -1700,7 +1812,8 @@ def plan(
     if not dry_run and result.get("verified"):
         if verify_symbols:
             verify.record_wo_symbols(root, wo_num, verify_symbols)
-        result.update(_mirror_to_gdocs(root, conn, wo_num, block, section))
+        if should_sync_gdocs(sync_gdocs):
+            result.update(_mirror_to_gdocs(root, conn, wo_num, block, section))
 
     result.update({
         "wo": wo_num,

@@ -20,12 +20,15 @@ INSTRUCTIONS = (
     "never open the Markdown sources or .atlas/cache with Read/Grep. Those files are "
     "large; the index is faster and returns only the relevant section. "
     "Flow: atlas_where('topic') -> atlas_read(anchor) for the full text. "
-    "PLANNING: use atlas_plan to create a new open Work Order with `- [ ]` steps "
-    "(it automatically links the matching spec anchor via atlas_where). "
+    "ROLE SPLIT: Synced Google Docs (.atlas/cache) are read-only design sources (GDD); "
+    "local Git Markdown (docs/ARCHITECTURE.md) is the authoritative single source of truth "
+    "for Work Orders and `- [x]` checklist steps; Google Sheets hold balancing tables. "
+    "PLANNING: use atlas_plan to create a new open Work Order with `- [ ]` steps in "
+    "docs/ARCHITECTURE.md (it automatically links the matching spec anchor via atlas_where). "
     "WRITING: call atlas_set_status and atlas_publish only after tests are green — "
     "marking something done is the last step, never the first. Design prose, formulas "
-    "and balancing numbers are read-only; autonomous writes are limited to status "
-    "markers, implementation columns and file paths. "
+    "and Google Docs are read-only; autonomous writes are limited to local Work Order "
+    "status markers/checkboxes and spreadsheet rows. "
     "NEVER write balancing values as a cell coordinate (C14): atlas_sheet_update takes "
     "a row_key plus column name and computes the cell itself. "
     # --- Directness: prevents 15-call chains for one question ---
@@ -469,7 +472,7 @@ def atlas_brief(
         readOnlyHint=False,
         destructiveHint=False,
         idempotentHint=True,
-        openWorldHint=True,
+        openWorldHint=False,
     )
 )
 @_health
@@ -514,11 +517,11 @@ def atlas_publish(
         ),
     ] = None,
 ) -> str:
-    """Append a new Work Order status entry to the documentation — gated by a code-wiring check and verified by read-back.
+    """Append a new Work Order status entry to local Git documentation (`docs/ARCHITECTURE.md`) — gated by a code-wiring check and verified by read-back.
 
-    Use this tool as the FINAL step after tests pass to record a new Work Order in the bound Google Doc
-    or local managed Markdown file (`docs/ARCHITECTURE.md`). If the Work Order heading already exists and
-    you only need to flip `⬜ OPEN` to `✅ DONE`, use `atlas_set_status` instead.
+    Use this tool as the FINAL step after tests pass to record a new Work Order in `docs/ARCHITECTURE.md`
+    (synced Google Docs remain read-only design sources by default). If the Work Order heading already exists
+    and you only need to flip `⬜ OPEN` to `✅ DONE`, use `atlas_set_status` instead.
 
     Behavior & Output:
     - Pre-write wiring gate: when `status='done'`, verifies that every symbol in `verify_symbols` (and
@@ -621,7 +624,7 @@ def atlas_plan(
         readOnlyHint=False,
         destructiveHint=False,
         idempotentHint=True,
-        openWorldHint=True,
+        openWorldHint=False,
     )
 )
 @_health
@@ -668,18 +671,18 @@ def atlas_set_status(
         ),
     ] = None,
 ) -> str:
-    """Flip the status marker of an existing Work Order (`⬜ OPEN` <-> `✅ DONE`) or Markdown checkbox task (`- [ ]` <-> `- [x]`).
+    """Flip the status marker of an existing Work Order (`⬜ OPEN` <-> `✅ DONE`) or Markdown checkbox task (`- [ ]` <-> `- [x]`) in local Git documentation (`docs/ARCHITECTURE.md`).
 
     Use this tool as the final step when completing an existing open Work Order (`wo=N`) or a checkbox
-    task from `atlas_tasks` (`task='...'`). To append a brand-new Work Order entry that is not yet in the
-    document, use `atlas_publish` instead.
+    step (`task='...'`). Legacy GDD-only Work Orders are automatically promoted into `docs/ARCHITECTURE.md`
+    without mutating read-only Google Docs. To append a brand-new Work Order entry, use `atlas_publish` instead.
 
     Behavior & Output:
     - Pre-write wiring gate: when `status='done'`, checks that all symbols in `verify_symbols` (and
       `.atlas/wo-symbols.yml`) are defined and have at least one caller/reference. Refuses with
       `{changed: false, refused: true, refusal: "..."}` if any symbol is unwired.
-    - Verified in-place update: updates the status marker or checkbox in the local Markdown file (or active
-      Google Doc tab for Work Orders), verifies by reading back, and returns JSON `{changed, verified, status}`.
+    - Verified local update: updates the status marker or checkbox in `docs/ARCHITECTURE.md`, verifies
+      by reading back from disk, and returns JSON `{changed, verified, status}`.
     """
     from . import gdocs, publish as publish_mod
 
@@ -887,7 +890,7 @@ def atlas_sheets() -> str:
                 "spreadsheets": [],
                 "hint": "No spreadsheet source known. Run `atlas sync --query <Name>` first.",
             }, ensure_ascii=False)
-        service = sheets_mod._service()
+        service = sheets_mod._service(write=False)
         payload = []
         for source in sources:
             item = {"name": source["name"], "id": source["id"]}
@@ -1014,8 +1017,8 @@ def atlas_status(
         Field(
             default=False,
             description=(
-                "If true, automatically self-heal and synchronize orphaned Work Orders from `.atlas/mutations.log` "
-                "and `.atlas/wo-symbols.yml` into local `docs/ARCHITECTURE.md` and any bound Google Doc before "
+                "If true, automatically self-heal and consolidate orphaned Work Orders from `.atlas/mutations.log`, "
+                "`.atlas/wo-symbols.yml`, and synced GDD cache into local `docs/ARCHITECTURE.md` before "
                 "returning the status list (default false)."
             ),
         ),
@@ -1023,8 +1026,9 @@ def atlas_status(
 ) -> str:
     """Return the complete list of documented Work Orders (`⬜ OPEN`, `🚧 IN PROGRESS`, `✅ DONE`) and index freshness.
 
-    Call with no parameters for a fast read-only progress overview, or pass `reconcile=True` to automatically
-    restore unindexed audit-log Work Orders and cross-sync local and Google Docs entries in one step.
+    Call with no parameters for a fast read-only progress overview (with local `docs/ARCHITECTURE.md`
+    authoritative over read-only GDD cache), or pass `reconcile=True` to consolidate unindexed audit-log
+    and legacy GDD Work Orders into `docs/ARCHITECTURE.md` in one step.
     For granular Markdown checkboxes (`- [ ]`), use `atlas_tasks` instead.
 
     Behavior & Output:

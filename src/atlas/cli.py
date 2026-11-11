@@ -146,10 +146,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("status", parents=[common], help="progress: work order status")
     p.add_argument("--reconcile", action="store_true",
-                   help="self-heal unindexed audit-log Work Orders and cross-sync local & Google Docs")
+                   help="self-heal unindexed audit-log and GDD Work Orders into local docs")
+    p.add_argument("--gdocs", dest="sync_gdocs", action="store_true",
+                   help="opt-in: when combined with --reconcile, also mirror Work Orders to Google Docs")
     p = sub.add_parser("reconcile", parents=[common],
-                       help="self-heal orphaned Work Orders and cross-sync local & Google Docs")
+                       help="self-heal orphaned and GDD Work Orders into local docs (opt-in --gdocs)")
     p.add_argument("--dry-run", action="store_true", help="preview without writing")
+    p.add_argument("--gdocs", dest="sync_gdocs", action="store_true",
+                   help="opt-in: also mirror reconciled Work Orders to a bound Google Doc")
     sub.add_parser("lint", parents=[common], help="check structure (cleanup list)")
 
     p = sub.add_parser("brief", parents=[common],
@@ -177,6 +181,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("auth", parents=[common], help="Google consent (OAuth, opens the browser)")
     p.add_argument("--client-secret", help="path to client_secret.json")
     p.add_argument("--force", action="store_true", help="discard the existing token")
+    p.add_argument("--docs-write", action="store_true",
+                   help="opt-in: also request Google Docs write scope (default: Docs read-only + Sheets write)")
 
     p = sub.add_parser("sync", parents=[common], help="fetch Google Docs/Sheets as Markdown")
     p.add_argument("--query", help="name filter, e.g. 'MYPROJECT'")
@@ -193,6 +199,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--dry-run", action="store_true", help="show what would be written, write nothing")
     p.add_argument("--verify-symbols", default="",
                    help="comma-separated symbols this order built (wiring gate)")
+    p.add_argument("--gdocs", dest="sync_gdocs", action="store_true",
+                   help="opt-in: also mirror the Work Order to a bound Google Doc")
 
     p = sub.add_parser("plan", parents=[common],
                        help="plan a new open work order with auto-linked spec anchor and steps")
@@ -206,6 +214,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--symbols", "--verify-symbols", dest="symbols", default="",
                    help="comma-separated target symbols to pre-register in .atlas/wo-symbols.yml")
     p.add_argument("--dry-run", action="store_true", help="preview without writing")
+    p.add_argument("--gdocs", dest="sync_gdocs", action="store_true",
+                   help="opt-in: also mirror the planned Work Order to a bound Google Doc")
 
     p = sub.add_parser("set-status", parents=[common],
                        help="change the status of a work order or checkbox task")
@@ -214,6 +224,8 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--status", required=True, choices=["done", "open"])
     p.add_argument("--dry-run", action="store_true")
     p.add_argument("--verify-symbols", default="")
+    p.add_argument("--gdocs", dest="sync_gdocs", action="store_true",
+                   help="opt-in: also mirror the status/checkbox change to a bound Google Doc")
 
     sub.add_parser("sheets", parents=[common],
                    help="known spreadsheets and their tabs")
@@ -312,15 +324,20 @@ def main(argv: list[str] | None = None) -> int:
 
         if args.force and gdocs.TOKEN_PATH.exists():
             gdocs.TOKEN_PATH.unlink()
+        wanted_scopes = gdocs.WRITE_SCOPES if args.docs_write else gdocs.SHEET_WRITE_SCOPES
         try:
             gdocs.load_credentials(interactive=True, client_secret=args.client_secret,
-                                   scopes=gdocs.WRITE_SCOPES)
+                                   scopes=wanted_scopes)
         except gdocs.SyncError as error:
             print(f"Error: {error}", file=sys.stderr)
             return 1
         print(json.dumps(gdocs.token_status(), ensure_ascii=False, indent=2))
-        print("\nAccess granted: read, Docs write (`publish`) "
-              "and Sheets write (`sheet-update`).")
+        if args.docs_write:
+            print("\nAccess granted: GDD read, Sheets write (`sheet-update`), "
+                  "and opt-in Docs write (`--gdocs`).")
+        else:
+            print("\nAccess granted: Google Docs read-only (`sync`) "
+                  "and Google Sheets write (`sheet-update`).")
         return 0
 
     if args.command == "sync":
@@ -359,6 +376,7 @@ def main(argv: list[str] | None = None) -> int:
                 section=args.section,
                 dry_run=args.dry_run,
                 verify_symbols=_symbols(args.verify_symbols),
+                sync_gdocs=bool(getattr(args, "sync_gdocs", False)),
             )
         except (gdocs.SyncError, ValueError) as error:
             print(f"Error: {error}", file=sys.stderr)
@@ -384,6 +402,7 @@ def main(argv: list[str] | None = None) -> int:
                 section=args.section,
                 verify_symbols=_symbols(args.symbols),
                 dry_run=args.dry_run,
+                sync_gdocs=bool(getattr(args, "sync_gdocs", False)),
             )
         except (gdocs.SyncError, ValueError) as error:
             print(f"Error: {error}", file=sys.stderr)
@@ -413,6 +432,7 @@ def main(argv: list[str] | None = None) -> int:
                 root, conn, args.wo, status=args.status, dry_run=args.dry_run,
                 verify_symbols=_symbols(args.verify_symbols),
                 task=args.task,
+                sync_gdocs=bool(getattr(args, "sync_gdocs", False)),
             )
         except (gdocs.SyncError, ValueError) as error:
             print(f"Error: {error}", file=sys.stderr)
@@ -436,7 +456,7 @@ def main(argv: list[str] | None = None) -> int:
                 print("No spreadsheet source known. "
                       "Run `atlas sync --query <Name>` first.", file=sys.stderr)
                 return 1
-            service = sheets_mod._service()
+            service = sheets_mod._service(write=False)
             payload = []
             for source in sources:
                 item = {"name": source["name"], "id": source["id"], "tabs": []}
@@ -576,7 +596,12 @@ def main(argv: list[str] | None = None) -> int:
     elif args.command == "status":
         from . import status as status_mod
 
-        raw = status_mod.status(conn, root=root, reconcile=bool(getattr(args, "reconcile", False)))
+        raw = status_mod.status(
+            conn,
+            root=root,
+            reconcile=bool(getattr(args, "reconcile", False)),
+            sync_gdocs=bool(getattr(args, "sync_gdocs", False)),
+        )
         if as_json:
             print(json.dumps(json.loads(raw), ensure_ascii=False, indent=2))
             return 0
@@ -586,7 +611,12 @@ def main(argv: list[str] | None = None) -> int:
         from . import status as status_mod
 
         refresh(conn, root)
-        report = status_mod.reconcile_work_orders(root, conn, dry_run=bool(getattr(args, "dry_run", False)))
+        report = status_mod.reconcile_work_orders(
+            root,
+            conn,
+            dry_run=bool(getattr(args, "dry_run", False)),
+            sync_gdocs=bool(getattr(args, "sync_gdocs", False)),
+        )
         if as_json:
             print(json.dumps(report, ensure_ascii=False, indent=2))
         else:

@@ -21,11 +21,15 @@ READ_SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets.readonly",
 ]
 
-# Write scopes are used only by `atlas publish` (work order lines) and `atlas sheet-update`.
-# `spreadsheets` (without .readonly) is the write scope; `spreadsheets.readonly`
-# is kept alongside it so `sync` continues to work with the same token.
-WRITE_SCOPES = READ_SCOPES + [
+# Default OAuth scopes for `atlas auth`: Google Docs read-only (GDD export) +
+# Google Sheets read/write (`atlas_sheet_update` / `atlas_sheet_append`).
+SHEET_WRITE_SCOPES = READ_SCOPES + [
     "https://www.googleapis.com/auth/spreadsheets",
+]
+
+# Opt-in Google Docs write scopes (`atlas auth --docs-write`), required only
+# when mirroring Work Orders to Google Docs via `--gdocs` / `ATLAS_SYNC_GDOCS=1`.
+WRITE_SCOPES = SHEET_WRITE_SCOPES + [
     "https://www.googleapis.com/auth/documents",
 ]
 

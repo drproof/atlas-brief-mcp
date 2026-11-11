@@ -118,16 +118,32 @@ def _line_declares_wo(line: str) -> bool:
     return False
 
 
+def _is_cache_section(path: str, anchor: str) -> bool:
+    """Return True when a section comes from `.atlas/cache/` or `.gdd/cache/` (synced Google Docs/Sheets)."""
+    norm_path = (path or "").replace("\\", "/").removeprefix("./")
+    if norm_path.startswith((".atlas/cache/", ".gdd/cache/")):
+        return True
+    if not norm_path and anchor.split("#", 1)[0].casefold() in {"gdd", "master-gdd"}:
+        return True
+    return False
+
+
 def extract_work_orders(conn: sqlite3.Connection) -> list[dict]:
     """Find 'Work Order N' entries along with their status, spec anchor, steps, and symbols.
 
-    Only lines with a status marker immediately after the number count — prose
-    mentions like "API from Work Order 1" are not status declarations. Searches
-    across all parts because long sections are split into parts 1..n.
+    Local Git Markdown (`docs/ARCHITECTURE.md`, etc.) is evaluated first and
+    serves as the authoritative source of truth over read-only Google Docs exports
+    in `.atlas/cache/`. Historical GDD-only Work Orders that do not exist in local
+    Markdown are still included seamlessly.
     """
-    rows = conn.execute(
-        "SELECT anchor, heading, body FROM sections ORDER BY rowid"
-    ).fetchall()
+    try:
+        rows = conn.execute(
+            "SELECT anchor, heading, body, COALESCE(path, '') AS path FROM sections ORDER BY rowid"
+        ).fetchall()
+    except sqlite3.OperationalError:
+        rows = conn.execute(
+            "SELECT anchor, heading, body, '' AS path FROM sections ORDER BY rowid"
+        ).fetchall()
 
     # Reassemble multi-part sections (`anchor` + `anchor~2`, or `anchor~1` + `anchor~2`)
     # before scanning so a 1,500-char chunk boundary never separates a Work Order header
@@ -140,17 +156,23 @@ def extract_work_orders(conn: sqlite3.Connection) -> list[dict]:
         if base_anchor and base_anchor in by_base:
             by_base[base_anchor]["body"] += "\n" + (row["body"] or "")
             continue
+        row_path = row["path"] or ""
         entry_row = {
             "anchor": base_anchor or raw_anchor,
             "heading": row["heading"],
             "body": row["body"] or "",
+            "is_local": not _is_cache_section(row_path, base_anchor or raw_anchor),
         }
         if base_anchor:
             by_base[base_anchor] = entry_row
         grouped_rows.append(entry_row)
 
+    # Evaluate authoritative local Markdown sections before synced `.atlas/cache/` exports.
+    grouped_rows.sort(key=lambda r: 0 if r["is_local"] else 1)
+
     items: dict[int, dict] = {}
     for row in grouped_rows:
+        row_is_local = bool(row["is_local"])
         heading_line = (row["heading"] or "").strip()
         lines = ([heading_line] if heading_line else []) + row["body"].splitlines()
         for index, line in enumerate(lines):
@@ -207,10 +229,20 @@ def extract_work_orders(conn: sqlite3.Connection) -> list[dict]:
                     # overrides the untouched `atlas init` skeleton placeholder.
                     if _is_boilerplate_wo(existing) and candidate_title.strip().casefold() not in _BOILERPLATE_WO1_TITLES:
                         pass
+                    elif existing.get("_local") and not row_is_local:
+                        # Local Git Markdown is authoritative over synced Google Docs cache:
+                        # never let stale GDD status or unchecked steps override local state,
+                        # only backfill missing metadata if absent locally.
+                        if not existing.get("spec_anchor") and spec_anchor:
+                            existing["spec_anchor"] = spec_anchor
+                        if not existing.get("symbols") and symbols:
+                            existing["symbols"] = symbols[:6]
+                        if not existing.get("steps") and steps:
+                            existing["steps"] = steps
+                            existing["steps_done"] = sum(1 for s in steps if s["done"])
+                            existing["steps_total"] = len(steps)
+                        continue
                     else:
-                        # Merge checklist step completion across local docs/ARCHITECTURE.md
-                        # and synced Google Docs so checking off a step locally is
-                        # immediately reflected even before Drive export catches up.
                         if (
                             status == "done"
                             and (existing.get("title") or "").strip().casefold()
@@ -245,6 +277,7 @@ def extract_work_orders(conn: sqlite3.Connection) -> list[dict]:
                     "symbols": symbols[:6],
                     "anchor": row["anchor"],
                     "heading": row["heading"],
+                    "_local": row_is_local,
                 }
                 if spec_anchor:
                     entry["spec_anchor"] = spec_anchor
@@ -253,7 +286,12 @@ def extract_work_orders(conn: sqlite3.Connection) -> list[dict]:
                     entry["steps_done"] = sum(1 for s in steps if s["done"])
                     entry["steps_total"] = len(steps)
                 items[number] = entry
-    return [items[key] for key in sorted(items)]
+    result: list[dict] = []
+    for key in sorted(items):
+        item = items[key]
+        item.pop("_local", None)
+        result.append(item)
+    return result
 
 
 def freshness(conn: sqlite3.Connection, now: datetime | None = None) -> str:
@@ -486,9 +524,13 @@ def reconcile_work_orders(
     root: Path,
     conn: sqlite3.Connection,
     dry_run: bool = False,
+    sync_gdocs: bool = False,
 ) -> dict:
-    """Self-heal Work Order state across `mutations.log`/`wo-symbols.yml`, local `docs/ARCHITECTURE.md`, and bound Google Docs."""
+    """Self-heal Work Order state into local `docs/ARCHITECTURE.md` (and optionally Google Docs when `sync_gdocs=True`)."""
     from . import localwrite, publish as publish_mod
+
+    has_local_targets = bool(localwrite.targets(root))
+    mirror_gdocs = publish_mod.should_sync_gdocs(sync_gdocs) or not has_local_targets
 
     indexed = extract_work_orders(conn)
     indexed_nums = {int(item["wo"]) for item in indexed}
@@ -498,7 +540,7 @@ def reconcile_work_orders(
     synced_to_local: list[int] = []
     synced_to_gdocs: list[int] = []
 
-    # 1. Restore orphaned Work Orders from audit log / wo-symbols.yml into local docs and Google Docs
+    # 1. Restore orphaned Work Orders from audit log / wo-symbols.yml into local docs (and opt-in Google Docs)
     for uwo in unindexed:
         wo_num = int(uwo["wo"])
         st = _norm_audit_status(uwo.get("status"), fallback="done")
@@ -513,13 +555,13 @@ def reconcile_work_orders(
             else "Restored from project audit log."
         )
         line = publish_mod.format_line(wo_num, st, title, desc)
-        if localwrite.find_line(root, wo_num) is None:
+        if has_local_targets and localwrite.find_line(root, wo_num) is None:
             res = localwrite.publish(
                 root, conn, wo_num, line, publish_mod.DEFAULT_SECTION, dry_run=dry_run
             )
             if res.get("written") or (dry_run and res.get("line")):
                 restored_from_audit.append(wo_num)
-        if not dry_run:
+        if not dry_run and mirror_gdocs:
             mirror = publish_mod._mirror_to_gdocs(
                 root, conn, wo_num, line, publish_mod.DEFAULT_SECTION
             )
@@ -533,7 +575,7 @@ def reconcile_work_orders(
                     if st_mirror.get("gdocs_status_changed"):
                         synced_to_gdocs.append(wo_num)
 
-    # 2. Cross-sync indexed Work Orders between local docs and bound Google Docs
+    # 2. Consolidate indexed Work Orders (including historical GDD-only entries) into local docs
     for item in extract_work_orders(conn):
         if _is_boilerplate_wo(item):
             continue
@@ -559,29 +601,30 @@ def reconcile_work_orders(
         ]
         block = "\n".join([header, *step_lines])
 
-        found_local = localwrite.find_line(root, wo_num)
-        if found_local is None:
-            res = localwrite.publish(
-                root, conn, wo_num, block, publish_mod.DEFAULT_SECTION, dry_run=dry_run
-            )
-            if res.get("written") or (dry_run and res.get("line")):
-                synced_to_local.append(wo_num)
-        elif not dry_run:
-            local_changed = False
-            st_res = localwrite.set_status(root, conn, wo_num, st, dry_run=False)
-            if st_res.get("changed"):
-                local_changed = True
-            for s in steps_list:
-                if s.get("done") and (s.get("text") or "").strip():
-                    task_res = localwrite.set_task_status(
-                        root, conn, s["text"], "done", dry_run=False, wo=wo_num
-                    )
-                    if task_res.get("changed"):
-                        local_changed = True
-            if local_changed and wo_num not in synced_to_local:
-                synced_to_local.append(wo_num)
+        if has_local_targets:
+            found_local = localwrite.find_line(root, wo_num)
+            if found_local is None:
+                res = localwrite.publish(
+                    root, conn, wo_num, block, publish_mod.DEFAULT_SECTION, dry_run=dry_run
+                )
+                if res.get("written") or (dry_run and res.get("line")):
+                    synced_to_local.append(wo_num)
+            elif not dry_run:
+                local_changed = False
+                st_res = localwrite.set_status(root, conn, wo_num, st, dry_run=False)
+                if st_res.get("changed"):
+                    local_changed = True
+                for s in steps_list:
+                    if s.get("done") and (s.get("text") or "").strip():
+                        task_res = localwrite.set_task_status(
+                            root, conn, s["text"], "done", dry_run=False, wo=wo_num
+                        )
+                        if task_res.get("changed"):
+                            local_changed = True
+                if local_changed and wo_num not in synced_to_local:
+                    synced_to_local.append(wo_num)
 
-        if not dry_run:
+        if not dry_run and mirror_gdocs:
             mirror = publish_mod._mirror_to_gdocs(
                 root, conn, wo_num, block, publish_mod.DEFAULT_SECTION
             )
@@ -623,11 +666,14 @@ def status(
     max_chars: int = 8000,
     root: Path | None = None,
     reconcile: bool = False,
+    sync_gdocs: bool = False,
 ) -> str:
     proj_root = root or _infer_root(conn)
     reconcile_report: dict | None = None
     if reconcile and proj_root is not None:
-        reconcile_report = reconcile_work_orders(proj_root, conn, dry_run=False)
+        reconcile_report = reconcile_work_orders(
+            proj_root, conn, dry_run=False, sync_gdocs=sync_gdocs
+        )
 
     work_orders = extract_work_orders(conn)
     unindexed: list[dict] = []

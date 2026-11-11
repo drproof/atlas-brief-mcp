@@ -266,20 +266,19 @@ Same block as above. On Windows, use `"command": "atlas.exe"` if the bare comman
 
 ## ☁️ Google Docs & Sheets (Optional)
 
-If your team's living documentation or balancing tables live in Google Docs and Sheets, `atlas` indexes and updates them through the official Google APIs — including multi-tab documents:
+`atlas` uses a clean role split when connected to Google Workspace:
+
+- **Google Docs = Read-Only Design Source (GDD):** `atlas sync` exports multi-tab GDDs into `.atlas/cache/` for fast FTS5 search (`atlas_where`, `atlas_search`, `atlas_read`) without letting agents live-edit design prose or fight Drive export lag.
+- **Google Sheets = Balancing Tables (Read/Write):** `atlas_sheets`, `atlas_sheet_update`, and `atlas_sheet_append` update balancing rows deterministically by `row_key` + column name.
+- **Local Git Markdown (`docs/ARCHITECTURE.md`) = Authoritative Work Orders:** Work Orders, `- [x]` steps, and `.atlas/wo-symbols.yml` live in Git alongside your commits (0 ms latency across multiple agents).
 
 ```bash
-atlas auth                     # One-time OAuth consent in the browser
-atlas sync --query MYPROJECT   # Pull documents & sheets into the local cache
-atlas status
-atlas publish --wo 7 --title "Mission 1" --desc "Rooms 1-9"
+atlas auth                     # OAuth consent: Google Docs read-only + Google Sheets read/write
+atlas sync --query MYPROJECT   # Pull multi-tab GDDs & spreadsheets into the local index
+atlas reconcile                # Consolidate any legacy GDD-only Work Orders into docs/ARCHITECTURE.md
 ```
 
-Three engineering details that prevent common agent accidents:
-
-1. **Export to read, query directly to judge:** The search index is built from Drive exports, but post-write verification queries `documents.get` directly — because the Docs API is consistent immediately after `batchUpdate` while Drive export caches lag by 0.5–2 seconds.
-2. **Append-only with revision lock:** `requiredRevisionId` prevents a write from landing on a stale document revision, and an idempotency guard prevents duplicate status headers when a work order already exists in the live doc.
-3. **Tab-scoped status updates:** `replaceAllText` uses `tabsCriteria` so status changes only affect the active tab, never archive tabs.
+Need one-way Work Order mirroring back to a Google Doc? Opt in explicitly with `atlas auth --docs-write` and `--gdocs` (or `ATLAS_SYNC_GDOCS=1`) — protected by `documents.get` read-back verification, `requiredRevisionId` locks, and tab-scoped UTF-16 range replacement.
 
 ---
 
@@ -324,11 +323,11 @@ atlas measure --questions my-questions.txt    # One question per line
 ## 🧪 Automated Tests
 
 ```bash
-uv run pytest -q                                           # 221 unit & integration tests (offline)
+uv run pytest -q                                           # 266 unit & integration tests (offline)
 uv run python scripts/smoke_mcp.py --root examples/demo    # End-to-end JSON-RPC MCP smoke test
 ```
 
-All 221 tests run completely offline. Every Google Docs & Sheets interaction is tested against deterministic fakes — including edge cases where the API swallows a write or lags on export.
+All 266 tests run completely offline. Every Google Docs & Sheets interaction is tested against deterministic fakes — including edge cases where the API swallows a write or lags on export.
 
 ## 📄 License
 
